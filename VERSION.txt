@@ -1,0 +1,5 @@
+round: BRAND-REDESIGN-1
+built_utc: 2026-08-01T21:05:50Z
+contains: new violet/magenta brand identity (global tokens) + story rings + bottom nav/FAB matched to the reference board
+expected_file_count: 3 (not counting this file, README.md, and directories)
+note: this is the FIRST step of the full reference-board redesign — global color foundation only. Structural page-by-page rebuilds come next.
