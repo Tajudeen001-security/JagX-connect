@@ -219,6 +219,13 @@ export default function App() {
   const [activeChat, setActiveChat] = useState<Conversation | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [showCreateProduct, setShowCreateProduct] = useState(false);
+  const [newProductTitle, setNewProductTitle] = useState('');
+  const [newProductDescription, setNewProductDescription] = useState('');
+  const [newProductPriceCoins, setNewProductPriceCoins] = useState('');
+  const [newProductPriceUsd, setNewProductPriceUsd] = useState('');
+  const [newProductImageFile, setNewProductImageFile] = useState<File | null>(null);
+  const [newProductImagePreview, setNewProductImagePreview] = useState<string | null>(null);
+  const [isPublishingProduct, setIsPublishingProduct] = useState(false);
   const [activeLiveRoom, setActiveLiveRoom] = useState<LiveRoom | null>(null);
   const liveChatChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -852,7 +859,7 @@ export default function App() {
   const conversations: Conversation[] = [];
 
   // Marketplace listings
-  const products: Product[] = [];
+  const [products, setProducts] = useState<Product[]>([]);
 
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
 
@@ -1101,14 +1108,22 @@ export default function App() {
     }));
   };
 
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (!confirmDeleteModal) return;
     triggerHaptic(40);
     if (confirmDeleteModal.type === 'post') {
       setPosts(posts.filter(p => p.id !== confirmDeleteModal.id));
+      if (isSupabaseConfigured() && !confirmDeleteModal.id.startsWith('p_')) {
+        const { error } = await supabase.from('posts').delete().eq('id', confirmDeleteModal.id);
+        if (error) triggerToast(`⚠️ Deleted locally only: ${error.message}`);
+      }
       triggerToast('Post deleted successfully.');
     } else if (confirmDeleteModal.type === 'product') {
       setProducts(products.filter(p => p.id !== confirmDeleteModal.id));
+      if (isSupabaseConfigured() && !confirmDeleteModal.id.startsWith('prod_')) {
+        const { error } = await supabase.from('products').delete().eq('id', confirmDeleteModal.id);
+        if (error) triggerToast(`⚠️ Deleted locally only: ${error.message}`);
+      }
       triggerToast('Marketplace listing removed.');
     }
     setConfirmDeleteModal(null);
@@ -1551,6 +1566,160 @@ export default function App() {
       supabase.removeChannel(channel);
     };
   }, []);
+
+  const handleCreateProductSubmit = async () => {
+    if (!newProductTitle.trim()) return;
+    setIsPublishingProduct(true);
+
+    const sellerName = currentUser?.name || 'JagX Seller';
+    let finalImageUrl = newProductImagePreview || 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?auto=format&fit=crop&w=600&q=80';
+
+    if (isSupabaseConfigured() && newProductImageFile && currentUser?.id) {
+      const ext = newProductImageFile.name.split('.').pop() || 'jpg';
+      const path = `${currentUser.id}/products/${Date.now()}.${ext}`;
+      const { error: uploadError } = await supabase.storage
+        .from('post-media')
+        .upload(path, newProductImageFile, { upsert: false });
+      if (uploadError) {
+        triggerToast(`⚠️ Photo upload failed: ${uploadError.message}`);
+        setIsPublishingProduct(false);
+        return;
+      }
+      const { data: publicUrlData } = supabase.storage.from('post-media').getPublicUrl(path);
+      finalImageUrl = publicUrlData.publicUrl;
+    }
+
+    const localId = `prod_${Date.now()}`;
+    const newProd: Product = {
+      id: localId,
+      title: newProductTitle.trim(),
+      description: newProductDescription.trim(),
+      priceCoins: parseInt(newProductPriceCoins) || 0,
+      priceUsd: parseFloat(newProductPriceUsd) || 0,
+      category: 'general',
+      imageUrl: finalImageUrl,
+      sellerName
+    };
+
+    if (isSupabaseConfigured() && currentUser?.id) {
+      const { error } = await supabase.from('products').insert([{
+        seller_id: currentUser.id,
+        seller_name: sellerName,
+        title: newProd.title,
+        description: newProd.description,
+        price_coins: newProd.priceCoins,
+        price_usd: newProd.priceUsd,
+        category: newProd.category,
+        image_url: finalImageUrl
+      }]);
+      if (error) triggerToast(`⚠️ Listed locally only — Supabase insert failed: ${error.message}`);
+    }
+
+    setProducts(prev => [newProd, ...prev]);
+    setShowCreateProduct(false);
+    setNewProductTitle('');
+    setNewProductDescription('');
+    setNewProductPriceCoins('');
+    setNewProductPriceUsd('');
+    setNewProductImageFile(null);
+    setNewProductImagePreview(null);
+    setIsPublishingProduct(false);
+    triggerToast('🛍️ Listing published!');
+  };
+
+  // Live-load marketplace listings and keep them synced in real time
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+    let cancelled = false;
+
+    supabase.from('products').select('*').order('created_at', { ascending: false }).limit(100)
+      .then(({ data, error }) => {
+        if (cancelled || error || !data) return;
+        setProducts(data.map((row: any): Product => ({
+          id: row.id,
+          title: row.title,
+          description: row.description,
+          priceCoins: row.price_coins,
+          priceUsd: Number(row.price_usd),
+          category: row.category,
+          imageUrl: row.image_url,
+          sellerName: row.seller_name
+        })));
+      });
+
+    const channel = supabase
+      .channel('public:products')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'products' }, (payload) => {
+        const row: any = payload.new;
+        setProducts((prev) => {
+          if (prev.some((p) => p.id === row.id)) return prev;
+          const incoming: Product = {
+            id: row.id,
+            title: row.title,
+            description: row.description,
+            priceCoins: row.price_coins,
+            priceUsd: Number(row.price_usd),
+            category: row.category,
+            imageUrl: row.image_url,
+            sellerName: row.seller_name
+          };
+          return [incoming, ...prev.filter((p) => !p.id.startsWith('prod_'))];
+        });
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'products' }, (payload) => {
+        const oldRow: any = payload.old;
+        setProducts((prev) => prev.filter((p) => p.id !== oldRow.id));
+      })
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // Live-load this user's notifications and keep them synced in real time
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !currentUser?.id) return;
+    let cancelled = false;
+
+    supabase.from('notifications').select('*').eq('user_id', currentUser.id)
+      .order('created_at', { ascending: false }).limit(100)
+      .then(({ data, error }) => {
+        if (cancelled || error || !data) return;
+        setNotifications(data.map((row: any): AppNotification => ({
+          id: row.id,
+          title: row.title,
+          desc: row.description,
+          timestamp: new Date(row.created_at).toLocaleString(),
+          read: row.read,
+          type: row.type
+        })));
+      });
+
+    const channel = supabase
+      .channel(`notifications-${currentUser.id}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${currentUser.id}` }, (payload) => {
+        const row: any = payload.new;
+        setNotifications((prev) => {
+          if (prev.some((n) => n.id === row.id)) return prev;
+          return [{
+            id: row.id,
+            title: row.title,
+            desc: row.description,
+            timestamp: 'Just now',
+            read: row.read,
+            type: row.type
+          }, ...prev];
+        });
+      })
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, [currentUser?.id]);
 
   // Join/leave a real live-chat broadcast channel whenever the user opens
   // or closes a live room — this is what makes live chat actually live
@@ -4276,15 +4445,27 @@ export default function App() {
                 </div>
               )}
               {notifications.map(n => (
-                <div key={n.id} className="bg-[#1F222C] p-3 rounded-2xl border border-gray-800 flex items-start gap-3">
+                <div
+                  key={n.id}
+                  onClick={async () => {
+                    if (n.read) return;
+                    setNotifications(prev => prev.map(x => x.id === n.id ? { ...x, read: true } : x));
+                    if (isSupabaseConfigured() && currentUser?.id) {
+                      const { error } = await supabase.from('notifications').update({ read: true }).eq('id', n.id);
+                      if (error) console.warn('Mark-as-read sync failed:', error.message);
+                    }
+                  }}
+                  className={`p-3 rounded-2xl border flex items-start gap-3 cursor-pointer transition ${n.read ? 'bg-[#1F222C]/50 border-gray-800/50' : 'bg-[#1F222C] border-yellow-500/30'}`}
+                >
                   <div className="w-8 h-8 rounded-full bg-yellow-500/10 text-yellow-400 flex items-center justify-center font-bold shrink-0">
                     <Sparkles className="w-4 h-4" />
                   </div>
                   <div className="space-y-0.5 flex-1">
-                    <h5 className="text-xs font-bold text-white">{n.title}</h5>
+                    <h5 className={`text-xs font-bold ${n.read ? 'text-gray-400' : 'text-white'}`}>{n.title}</h5>
                     <p className="text-[11px] text-gray-300">{n.desc}</p>
                     <span className="text-[9px] text-gray-500 font-mono">{n.timestamp}</span>
                   </div>
+                  {!n.read && <span className="w-2 h-2 rounded-full bg-yellow-400 shrink-0 mt-1" />}
                 </div>
               ))}
             </div>
@@ -5381,7 +5562,82 @@ export default function App() {
         </div>
       )}
 
-      {/* RICH SHARE PREVIEW COMPONENT & DEEP LINK MODAL */}
+      {/* CREATE MARKETPLACE LISTING MODAL */}
+      {showCreateProduct && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-[#14161D] border-2 border-yellow-500/40 rounded-3xl p-5 max-w-sm w-full space-y-3 animate-in zoom-in-95 duration-150 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[#1F222C] pb-2">
+              <div className="flex items-center gap-2">
+                <ShoppingBag className="w-5 h-5 text-yellow-400" />
+                <h3 className="text-sm font-black text-white">List an Item</h3>
+              </div>
+              <button onClick={() => setShowCreateProduct(false)}><X className="w-4 h-4 text-gray-400" /></button>
+            </div>
+
+            <input
+              type="text"
+              value={newProductTitle}
+              onChange={e => setNewProductTitle(e.target.value)}
+              placeholder="Item title"
+              className="w-full bg-[#1F222C] border border-gray-700 rounded-xl px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-yellow-500"
+            />
+            <textarea
+              value={newProductDescription}
+              onChange={e => setNewProductDescription(e.target.value)}
+              rows={2}
+              placeholder="Describe the item..."
+              className="w-full bg-[#1F222C] border border-gray-700 rounded-xl px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-yellow-500"
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="number"
+                value={newProductPriceCoins}
+                onChange={e => setNewProductPriceCoins(e.target.value)}
+                placeholder="Price in Coins"
+                className="w-full bg-[#1F222C] border border-gray-700 rounded-xl px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-yellow-500"
+              />
+              <input
+                type="number"
+                value={newProductPriceUsd}
+                onChange={e => setNewProductPriceUsd(e.target.value)}
+                placeholder="Price in USD"
+                className="w-full bg-[#1F222C] border border-gray-700 rounded-xl px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-yellow-500"
+              />
+            </div>
+
+            <label className="flex flex-col items-center gap-1 text-[10px] text-yellow-400 font-semibold bg-yellow-500/10 py-3 rounded-xl border border-yellow-500/20 hover:bg-yellow-500/20 cursor-pointer">
+              <ImageIcon className="w-4 h-4" />
+              <span>{newProductImagePreview ? 'Change Photo' : 'Add Photo'}</span>
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  setNewProductImageFile(file);
+                  const reader = new FileReader();
+                  reader.onload = () => setNewProductImagePreview(reader.result as string);
+                  reader.readAsDataURL(file);
+                }}
+              />
+            </label>
+            {newProductImagePreview && (
+              <img src={newProductImagePreview} className="w-full h-28 object-cover rounded-xl border border-yellow-500" />
+            )}
+
+            <button
+              disabled={isPublishingProduct || !newProductTitle.trim()}
+              onClick={handleCreateProductSubmit}
+              className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold text-xs py-2.5 rounded-xl transition disabled:opacity-50"
+            >
+              {isPublishingProduct ? 'Listing...' : 'List Item'}
+            </button>
+          </div>
+        </div>
+      )}
+
+
       {deepSharePostModal && (
         <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div className="bg-[#14161D] border-2 border-yellow-500/50 rounded-3xl p-5 max-w-sm w-full space-y-4 shadow-[0_0_50px_rgba(234,179,8,0.25)] animate-in zoom-in-95 duration-150">
