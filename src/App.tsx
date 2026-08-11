@@ -85,7 +85,9 @@ import {
   MapPin,
   Map,
   Compass,
-  BookmarkPlus
+  BookmarkPlus,
+  Crown,
+  Vote
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured, saveOfflineCache, loadOfflineCache } from './lib/supabase';
 import { jagxGenerateImage, imageResultToDataUrl, isJagxAIConfigured } from './lib/jagxAI';
@@ -224,13 +226,7 @@ export default function App() {
 
   // Authentication & Supabase state
   const [currentUser, setCurrentUser] = useState<{ id?: string; email: string; name: string; handle: string; avatar: string } | null>(() => {
-    return loadOfflineCache('user_session', {
-      id: 'usr_default',
-      email: 'tajudeen@jagx.connect',
-      name: 'Tajudeen Gbadamosi',
-      handle: '@jagx_tajudeen',
-      avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
-    });
+    return loadOfflineCache('user_session', null);
   });
 
   const [showAuthModal, setShowAuthModal] = useState(false);
@@ -716,46 +712,50 @@ export default function App() {
     setAuthLoading(true);
     setAuthError(null);
 
-    if (isSupabaseConfigured()) {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: authEmail,
-        password: authPassword,
-      });
+    try {
+      if (isSupabaseConfigured()) {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: authEmail,
+          password: authPassword,
+        });
 
-      if (error) {
-        setAuthError(error.message);
-        setAuthLoading(false);
-        return;
-      }
+        if (error) {
+          setAuthError(error.message);
+          return;
+        }
 
-      if (data.user) {
-        const loggedUser = {
-          id: data.user.id,
-          email: data.user.email || authEmail,
-          name: data.user.user_metadata?.full_name || authEmail.split('@')[0],
+        if (data.user) {
+          const loggedUser = {
+            id: data.user.id,
+            email: data.user.email || authEmail,
+            name: data.user.user_metadata?.full_name || authEmail.split('@')[0],
+            handle: `@${authEmail.split('@')[0]}`,
+            avatar: data.user.user_metadata?.avatar_url || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
+          };
+          setCurrentUser(loggedUser);
+          saveOfflineCache('user_session', loggedUser);
+          setShowAuthModal(false);
+          triggerToast(`Welcome back, ${loggedUser.name}!`);
+        }
+      } else {
+        // Simulation mode when keys not provided in .env
+        const mockUser = {
+          id: `usr_${Date.now()}`,
+          email: authEmail,
+          name: authEmail.split('@')[0],
           handle: `@${authEmail.split('@')[0]}`,
-          avatar: data.user.user_metadata?.avatar_url || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
+          avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
         };
-        setCurrentUser(loggedUser);
-        saveOfflineCache('user_session', loggedUser);
+        setCurrentUser(mockUser);
+        saveOfflineCache('user_session', mockUser);
         setShowAuthModal(false);
-        triggerToast(`Welcome back, ${loggedUser.name}!`);
+        triggerToast(`Logged in as ${mockUser.name}`);
       }
-    } else {
-      // Simulation mode when keys not provided in .env
-      const mockUser = {
-        id: `usr_${Date.now()}`,
-        email: authEmail,
-        name: authEmail.split('@')[0],
-        handle: `@${authEmail.split('@')[0]}`,
-        avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
-      };
-      setCurrentUser(mockUser);
-      saveOfflineCache('user_session', mockUser);
-      setShowAuthModal(false);
-      triggerToast(`Logged in as ${mockUser.name}`);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Login failed — check your connection and try again.');
+    } finally {
+      setAuthLoading(false);
     }
-    setAuthLoading(false);
   };
 
   const handleSignUp = async (e: React.FormEvent) => {
@@ -767,27 +767,40 @@ export default function App() {
     setAuthLoading(true);
     setAuthError(null);
 
-    if (isSupabaseConfigured()) {
-      const { data, error } = await supabase.auth.signUp({
-        email: authEmail,
-        password: authPassword,
-        options: {
-          data: {
-            full_name: authName,
+    try {
+      if (isSupabaseConfigured()) {
+        const { data, error } = await supabase.auth.signUp({
+          email: authEmail,
+          password: authPassword,
+          options: {
+            data: {
+              full_name: authName,
+            }
           }
+        });
+
+        if (error) {
+          setAuthError(error.message);
+          return;
         }
-      });
 
-      if (error) {
-        setAuthError(error.message);
-        setAuthLoading(false);
-        return;
-      }
-
-      if (data.user) {
+        if (data.user) {
+          const newUser = {
+            id: data.user.id,
+            email: data.user.email || authEmail,
+            name: authName,
+            handle: `@${authName.toLowerCase().replace(/\s+/g, '_')}`,
+            avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
+          };
+          setCurrentUser(newUser);
+          saveOfflineCache('user_session', newUser);
+          setShowAuthModal(false);
+          triggerToast(`Account created! Welcome, ${newUser.name}`);
+        }
+      } else {
         const newUser = {
-          id: data.user.id,
-          email: data.user.email || authEmail,
+          id: `usr_${Date.now()}`,
+          email: authEmail,
           name: authName,
           handle: `@${authName.toLowerCase().replace(/\s+/g, '_')}`,
           avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
@@ -795,22 +808,13 @@ export default function App() {
         setCurrentUser(newUser);
         saveOfflineCache('user_session', newUser);
         setShowAuthModal(false);
-        triggerToast(`Account created! Welcome, ${newUser.name}`);
+        triggerToast(`Account created for ${newUser.name}`);
       }
-    } else {
-      const newUser = {
-        id: `usr_${Date.now()}`,
-        email: authEmail,
-        name: authName,
-        handle: `@${authName.toLowerCase().replace(/\s+/g, '_')}`,
-        avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
-      };
-      setCurrentUser(newUser);
-      saveOfflineCache('user_session', newUser);
-      setShowAuthModal(false);
-      triggerToast(`Account created for ${newUser.name}`);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Sign up failed — check your connection and try again.');
+    } finally {
+      setAuthLoading(false);
     }
-    setAuthLoading(false);
   };
 
   const handleSignOut = async () => {
@@ -846,6 +850,9 @@ export default function App() {
 
   // Conversations & DMs
   const conversations: Conversation[] = [];
+
+  // Marketplace listings
+  const products: Product[] = [];
 
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
 
@@ -1640,7 +1647,7 @@ export default function App() {
         <div className="flex items-center gap-2">
           <span className={`text-lg font-black tracking-tight ${accentColors.text}`}>JagX Connect</span>
           
-          {/* Supabase Connection Status Pill */}
+          {/* Connection Status Pill */}
           <button 
             onClick={() => setShowSupabaseConfigInfo(true)}
             className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border transition ${
@@ -1648,10 +1655,10 @@ export default function App() {
                 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
                 : 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'
             }`}
-            title="Click for Supabase & Env Var configuration"
+            title="Connection status"
           >
             {isSupabaseConfigured() ? <Wifi className="w-3 h-3" /> : <Database className="w-3 h-3" />}
-            <span className="hidden sm:inline">{isSupabaseConfigured() ? 'Supabase Live' : 'Offline / Local'}</span>
+            <span className="hidden sm:inline">{isSupabaseConfigured() ? 'Connected' : 'Offline Mode'}</span>
           </button>
         </div>
 
@@ -2262,9 +2269,22 @@ export default function App() {
                        p.authorHandle.toLowerCase().includes(q);
               }).length === 0 && (
                 <div className="text-center py-10 space-y-2 bg-[#14161D] rounded-2xl border border-[#1F222C]">
-                  <Search className="w-8 h-8 text-gray-600 mx-auto" />
-                  <p className="text-xs text-gray-400 font-semibold">No posts found matching "{feedSearchQuery}"</p>
-                  <button onClick={() => setFeedSearchQuery('')} className="text-xs text-yellow-400 underline font-bold">Clear search</button>
+                  {feedSearchQuery.trim() ? (
+                    <>
+                      <Search className="w-8 h-8 text-gray-600 mx-auto" />
+                      <p className="text-xs text-gray-400 font-semibold">No posts found matching "{feedSearchQuery}"</p>
+                      <button onClick={() => setFeedSearchQuery('')} className="text-xs text-yellow-400 underline font-bold">Clear search</button>
+                    </>
+                  ) : (
+                    <>
+                      <MessageSquare className="w-8 h-8 text-gray-600 mx-auto" />
+                      <p className="text-xs text-gray-400 font-semibold">No posts yet</p>
+                      <p className="text-[11px] text-gray-500">Be the first to share something on JagX.</p>
+                      <button onClick={() => setShowCreatePost(true)} className="bg-yellow-500 text-black text-xs font-bold px-4 py-1.5 rounded-full mt-1">
+                        Create Post
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -2273,6 +2293,19 @@ export default function App() {
 
         {/* 2. REELS SCREEN */}
         {activeTab === 'reels' && (
+          reels.length === 0 ? (
+            <div className="h-[calc(100vh-120px)] bg-black flex flex-col items-center justify-center gap-3 p-6 text-center">
+              <Video className="w-10 h-10 text-gray-600" />
+              <p className="text-sm font-bold text-white">No reels yet</p>
+              <p className="text-xs text-gray-400">Be the first to post a short video — it'll show up here for everyone.</p>
+              <button
+                onClick={() => setShowCreatePost(true)}
+                className="bg-yellow-500 text-black font-bold text-xs px-4 py-2 rounded-full mt-2"
+              >
+                Create a Reel
+              </button>
+            </div>
+          ) : (
           <div className="relative h-[calc(100vh-120px)] bg-black overflow-hidden flex flex-col justify-end p-4">
             <img src="https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80" className="absolute inset-0 w-full h-full object-cover opacity-60" />
             <div className="absolute inset-0 bg-gradient-to-t from-black via-black/30 to-transparent" />
@@ -2322,6 +2355,7 @@ export default function App() {
               </div>
             </div>
           </div>
+          )
         )}
 
         {/* 3. LIVE STREAMING SCREEN */}
@@ -2330,7 +2364,10 @@ export default function App() {
             <div className="flex items-center justify-between">
               <h2 className="text-base font-bold text-white">JagX Live Streaming</h2>
               <button 
-                onClick={() => setActiveLiveRoom(liveRooms[0])}
+                onClick={() => {
+                  if (liveRooms[0]) setActiveLiveRoom(liveRooms[0]);
+                  else triggerToast('🎥 Go-live setup coming soon — no active rooms yet.');
+                }}
                 className="bg-red-600 text-white font-bold text-xs px-3 py-1.5 rounded-full flex items-center gap-1.5 animate-pulse"
               >
                 <Radio className="w-4 h-4" />
@@ -2339,6 +2376,13 @@ export default function App() {
             </div>
 
             <div className="space-y-3">
+              {liveRooms.length === 0 && (
+                <div className="text-center py-14 space-y-2 bg-[#14161D] rounded-2xl border border-[#1F222C]">
+                  <Radio className="w-8 h-8 text-gray-600 mx-auto" />
+                  <p className="text-xs text-gray-400 font-semibold">No one is live right now</p>
+                  <p className="text-[11px] text-gray-500">Tap "Go Live" to start the first stream.</p>
+                </div>
+              )}
               {liveRooms.map(room => (
                 <div 
                   key={room.id}
@@ -2432,6 +2476,13 @@ export default function App() {
                 </div>
 
                 {/* Products Grid */}
+                {products.length === 0 ? (
+                  <div className="text-center py-14 space-y-2 bg-[#14161D] rounded-2xl border border-[#1F222C]">
+                    <ShoppingBag className="w-8 h-8 text-gray-600 mx-auto" />
+                    <p className="text-xs text-gray-400 font-semibold">No listings yet</p>
+                    <p className="text-[11px] text-gray-500">Tap "List Item" above to sell the first thing here.</p>
+                  </div>
+                ) : (
                 <div className="grid grid-cols-2 gap-3">
                   {products.map(prod => (
                     <div 
@@ -2463,6 +2514,7 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+                )}
               </>
             ) : (
               /* EXPLORE LOCAL GPS MAP INTERFACE */
@@ -2973,6 +3025,24 @@ export default function App() {
                 </div>
                 <div className="h-10 bg-gray-800 rounded-xl" />
                 <div className="h-40 bg-gray-800 rounded-2xl" />
+              </div>
+            ) : !currentUser ? (
+              <div className="h-[70vh] flex flex-col items-center justify-center text-center gap-3 px-6">
+                <User className="w-12 h-12 text-gray-600" />
+                <h3 className="text-sm font-bold text-white">You're not signed in</h3>
+                <p className="text-xs text-gray-400">Create an account or log in to set up your profile, post, and connect your wallet.</p>
+                <button
+                  onClick={() => { setAuthMode('signup'); setShowAuthModal(true); }}
+                  className="bg-yellow-500 text-black font-bold text-xs px-5 py-2.5 rounded-full mt-2"
+                >
+                  Create Account
+                </button>
+                <button
+                  onClick={() => { setAuthMode('login'); setShowAuthModal(true); }}
+                  className="text-yellow-400 text-xs font-semibold underline"
+                >
+                  Already have an account? Log in
+                </button>
               </div>
             ) : (
               <>
@@ -3885,14 +3955,14 @@ export default function App() {
         </div>
       )}
 
-      {/* SUPABASE & ENV VARS CONFIG INFO MODAL */}
+      {/* CONNECTION INFO MODAL */}
       {showSupabaseConfigInfo && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-[#14161D] border border-emerald-500/30 rounded-3xl p-5 max-w-sm w-full space-y-3 animate-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
-                <Database className="w-4 h-4" />
-                <span>Supabase & Realtime Setup</span>
+                <Wifi className="w-4 h-4" />
+                <span>Connection Status</span>
               </div>
               <button onClick={() => setShowSupabaseConfigInfo(false)}>
                 <X className="w-4 h-4 text-gray-400 hover:text-white" />
@@ -3901,20 +3971,18 @@ export default function App() {
 
             <div className="space-y-2 text-xs text-gray-300">
               <p className="leading-relaxed">
-                <strong className="text-white">Where to add your environment variables:</strong> Add your Supabase keys to your project's <code className="bg-black/50 px-1.5 py-0.5 rounded text-yellow-400 font-mono">.env</code> file:
+                {isSupabaseConfigured()
+                  ? <>You're <strong className="text-emerald-400">connected</strong>. Posts, chat, and your profile sync live across devices.</>
+                  : <>You're in <strong className="text-yellow-400">offline mode</strong> — everything still works, but it's saved only on this device.</>
+                }
               </p>
-
-              <div className="bg-[#0B0C10] border border-gray-800 p-2.5 rounded-xl text-[11px] font-mono text-gray-300 space-y-1">
-                <p className="text-emerald-400">VITE_SUPABASE_URL=https://your-proj.supabase.co</p>
-                <p className="text-emerald-400">VITE_SUPABASE_ANON_KEY=your-anon-key</p>
-              </div>
 
               <div className="bg-[#1F222C] p-2.5 rounded-xl border border-gray-800 space-y-1">
                 <p className="font-bold text-white flex items-center gap-1">
-                  <Wifi className="w-3.5 h-3.5 text-emerald-400" /> Offline LocalStorage Caching
+                  <Wifi className="w-3.5 h-3.5 text-emerald-400" /> Offline Caching
                 </p>
                 <p className="text-[11px] text-gray-400 leading-normal">
-                  When keys aren't configured yet or during network dropouts, JagX Connect automatically caches all posts, messages, and user session in local storage for uninterrupted offline operation.
+                  If your connection drops, JagX Connect automatically saves your posts, messages, and session locally so nothing is lost.
                 </p>
               </div>
             </div>
@@ -4200,6 +4268,13 @@ export default function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-2">
+              {notifications.length === 0 && (
+                <div className="text-center py-14 space-y-2">
+                  <Bell className="w-8 h-8 text-gray-600 mx-auto" />
+                  <p className="text-xs text-gray-400 font-semibold">You're all caught up</p>
+                  <p className="text-[11px] text-gray-500">New likes, comments and gifts will show up here.</p>
+                </div>
+              )}
               {notifications.map(n => (
                 <div key={n.id} className="bg-[#1F222C] p-3 rounded-2xl border border-gray-800 flex items-start gap-3">
                   <div className="w-8 h-8 rounded-full bg-yellow-500/10 text-yellow-400 flex items-center justify-center font-bold shrink-0">
@@ -4706,10 +4781,10 @@ export default function App() {
                   className="w-full bg-[#1F222C] text-gray-300 font-bold py-2 rounded-xl flex items-center justify-between px-3 border border-gray-800"
                 >
                   <span className="flex items-center gap-2">
-                    <Database className="w-4 h-4 text-emerald-400" />
-                    <span>Supabase & Cache Keys</span>
+                    <Wifi className="w-4 h-4 text-emerald-400" />
+                    <span>Sync & Connection</span>
                   </span>
-                  <span className="text-[10px] text-emerald-400">Active</span>
+                  <span className="text-[10px] text-emerald-400">{isSupabaseConfigured() ? 'Connected' : 'Offline'}</span>
                 </button>
               </div>
             </div>
