@@ -84,7 +84,6 @@ import {
   Move,
   MapPin,
   Map,
-  Sparkles,
   Compass,
   BookmarkPlus
 } from 'lucide-react';
@@ -114,6 +113,7 @@ interface Post {
   timestamp: string;
   content: string;
   imageUrl?: string;
+  videoUrl?: string;
   likesCount: number;
   commentsCount: number;
   giftsCount: number;
@@ -218,6 +218,7 @@ export default function App() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [showCreateProduct, setShowCreateProduct] = useState(false);
   const [activeLiveRoom, setActiveLiveRoom] = useState<LiveRoom | null>(null);
+  const liveChatChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -539,11 +540,7 @@ export default function App() {
   const [userBadges, setUserBadges] = useState<string[]>(['Diamond Ambassador', 'Black VIP', 'Verified Creator', 'Top Supporter']);
 
   // Notifications state
-  const [notifications, setNotifications] = useState<AppNotification[]>([
-    { id: 'n1', title: '🪙 Coin Gift Received', desc: 'Aisha Bello gifted you 50 JagX Coins on your post!', timestamp: '5m ago', read: false, type: 'gift' },
-    { id: 'n2', title: '❤️ New Like', desc: 'Davido Official liked your Web3 AI update.', timestamp: '15m ago', read: false, type: 'like' },
-    { id: 'n3', title: '💬 Comment Added', desc: 'Kemi Adebayo replied: "Amazing update!"', timestamp: '1h ago', read: true, type: 'comment' }
-  ]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
 
   // Helper glitch cipher
   const toGlitchCipher = (str: string) => {
@@ -555,7 +552,10 @@ export default function App() {
   const handleGoogleAuth = async () => {
     setAuthLoading(true);
     if (isSupabaseConfigured()) {
-      const { error } = await supabase.auth.signInWithOAuth({ provider: 'google' });
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: window.location.origin },
+      });
       if (error) setAuthError(error.message);
     } else {
       setTimeout(() => {
@@ -579,7 +579,10 @@ export default function App() {
   const handleXAuth = async () => {
     setAuthLoading(true);
     if (isSupabaseConfigured()) {
-      const { error } = await supabase.auth.signInWithOAuth({ provider: 'twitter' });
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'twitter',
+        options: { redirectTo: window.location.origin },
+      });
       if (error) setAuthError(error.message);
     } else {
       setTimeout(() => {
@@ -683,6 +686,9 @@ export default function App() {
   
   // Create Post image picker state
   const [selectedImageForPost, setSelectedImageForPost] = useState<string | null>(null);
+  const [selectedPostMediaFile, setSelectedPostMediaFile] = useState<File | null>(null);
+  const [selectedVideoForPost, setSelectedVideoForPost] = useState<string | null>(null);
+  const [isPublishingPost, setIsPublishingPost] = useState(false);
   const [showImagePicker, setShowImagePicker] = useState(false);
 
   // Sample placeholder images for post creation
@@ -825,148 +831,23 @@ export default function App() {
   }[accentTheme];
 
   // Feed Posts
-  const [posts, setPosts] = useState<Post[]>([
-    {
-      id: 'p1',
-      authorName: 'Aisha Bello',
-      authorHandle: '@aisha_tech',
-      authorAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80',
-      timestamp: '10 mins ago',
-      content: 'Bonjour à tous! Nous sommes très ravis de vous présenter la nouvelle version de JagX Connect. Le réseau Web3 est incroyable! 🚀✨ #Tech #Web3',
-      imageUrl: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=800&q=80',
-      likesCount: 342,
-      commentsCount: 2,
-      giftsCount: 12,
-      isLiked: true,
-      isSaved: false,
-      isCloseFriend: true,
-      language: 'fr',
-      analytics: { impressions: 1420, engagementRate: '18.4%', shares: 45 }
-    },
-    {
-      id: 'p2',
-      authorName: 'Tajudeen Gbadamosi',
-      authorHandle: '@jagx_tajudeen',
-      authorAvatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80',
-      timestamp: '1 hour ago',
-      content: 'JagX Coin economy now powers live gifts, marketplace transactions, and VIP project investments. What features are you most excited for? Vote in our official community poll below! 👇',
-      imageUrl: 'https://images.unsplash.com/photo-1559526324-4b87b5e36e44?auto=format&fit=crop&w=800&q=80',
-      likesCount: 890,
-      commentsCount: 1,
-      giftsCount: 85,
-      isLiked: false,
-      isSaved: true,
-      isCloseFriend: true,
-      language: 'en',
-      analytics: { impressions: 4890, engagementRate: '24.1%', shares: 120 },
-      poll: {
-        question: 'Which JagX Connect feature do you use most?',
-        options: [
-          { id: 'opt1', text: '🔒 Encrypted Secret PIN Chat', votes: 142 },
-          { id: 'opt2', text: '🔴 Live Stream & Coin Gifts', votes: 98 },
-          { id: 'opt3', text: '🛍️ Web3 NFT & Tech Marketplace', votes: 64 }
-        ],
-        totalVotes: 304
-      }
-    },
-    {
-      id: 'p3',
-      authorName: 'JagX Cloud Systems',
-      authorHandle: '@jagx_ad_cloud',
-      authorAvatar: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=150&q=80',
-      timestamp: 'Promoted',
-      content: '⚡ Host your Web3 dApps & AI Models on JagX High-Speed Decentralized Nodes with zero latency. Claim 500 free JagX Cloud credits now!',
-      imageUrl: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80',
-      likesCount: 120,
-      commentsCount: 0,
-      giftsCount: 5,
-      isLiked: false,
-      isSaved: false,
-      isCloseFriend: false,
-      isSponsored: true,
-      language: 'en'
-    }
-  ]);
+  const [posts, setPosts] = useState<Post[]>([]);
 
   // Comments state per post
-  const [postComments, setPostComments] = useState<Record<string, CommentItem[]>>({
-    p1: [
-      { id: 'c1', authorName: 'Kemi Adebayo', authorAvatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=150&q=80', text: 'Amazing update! Loving the new UI design.', timestamp: '5 mins ago' },
-      { id: 'c2', authorName: 'Davido Official', authorAvatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=150&q=80', text: 'Top tier platform! See you all on my live stream later 🔥', timestamp: '2 mins ago' }
-    ],
-    p2: [
-      { id: 'c3', authorName: 'Tunde Bakare', authorAvatar: 'https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?auto=format&fit=crop&w=150&q=80', text: 'The JagX Coin economy integration is smooth!', timestamp: '45 mins ago' }
-    ]
-  });
+  const [postComments, setPostComments] = useState<Record<string, CommentItem[]>>({});
 
-  const stories: Story[] = [
-    { id: 's1', userName: 'Aisha', userAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80' },
-    { id: 's2', userName: 'Davido', userAvatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=150&q=80' },
-    { id: 's3', userName: 'Kemi', userAvatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=150&q=80' },
-    { id: 's4', userName: 'Tunde', userAvatar: 'https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?auto=format&fit=crop&w=150&q=80' }
-  ];
+  const stories: Story[] = [];
 
   // Reels
-  const reels: Reel[] = [
-    {
-      id: 'r1',
-      creatorName: 'Aisha Bello',
-      creatorHandle: '@aisha_tech',
-      creatorAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80',
-      caption: 'Building high performance cross-platform applications with Jetpack Compose & React! #Tech #JagX',
-      soundTitle: 'JagX Original Sound - AfroTech Pulse',
-      likesCount: 1240,
-      commentsCount: 88,
-      isLiked: true
-    },
-    {
-      id: 'r2',
-      creatorName: 'Davido Official',
-      creatorHandle: '@davido_official',
-      creatorAvatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=150&q=80',
-      caption: 'Exclusive rehearsal clip for tonight live broadcast event on JagX Live! 🎤🔥',
-      soundTitle: 'Davido - Unavailable (JagX Remix)',
-      likesCount: 9850,
-      commentsCount: 420,
-      isLiked: false
-    }
-  ];
+  const reels: Reel[] = [];
 
   // Live Rooms
-  const liveRooms: LiveRoom[] = [
-    { id: 'l1', hostName: 'Davido Official', hostAvatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=150&q=80', title: '🔴 Live Rehearsal & Fan Q&A', viewerCount: 3420, category: 'Music' },
-    { id: 'l2', hostName: 'Aisha Bello', hostAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80', title: '🔴 Tech Startups & Investment Roundtable', viewerCount: 890, category: 'Business' }
-  ];
-
-  // Marketplace Products
-  const [products, setProducts] = useState<Product[]>([
-    { id: 'p101', title: 'JagX Gold VIP Card NFT', description: 'Exclusive access to private investment pools and physical events.', priceCoins: 5000, priceUsd: 49.99, category: 'Collectibles', imageUrl: 'https://images.unsplash.com/photo-1621416894569-0f39ed31d247?auto=format&fit=crop&w=600&q=80', sellerName: 'JagX Official' },
-    { id: 'p102', title: 'Wireless RGB Mechanical Keyboard', description: 'Hot-swappable tactile switches built for developer productivity.', priceCoins: 3500, priceUsd: 35.00, category: 'Electronics', imageUrl: 'https://images.unsplash.com/photo-1587829741301-dc798b83add3?auto=format&fit=crop&w=600&q=80', sellerName: 'Aisha Bello' },
-    { id: 'p103', title: 'Heavyweight JagX Hoodie', description: 'Premium cotton hoodie with embroidered gold branding.', priceCoins: 2000, priceUsd: 20.00, category: 'Fashion', imageUrl: 'https://images.unsplash.com/photo-1556905055-8f358a7a47b2?auto=format&fit=crop&w=600&q=80', sellerName: 'JRI Merch' }
-  ]);
+  const liveRooms: LiveRoom[] = [];
 
   // Conversations & DMs
-  const conversations: Conversation[] = [
-    { id: 'c1', partnerName: 'Aisha Bello', partnerAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80', lastMessage: '🔒 Secret Encrypted Message (PIN Required)', lastTimestamp: '12:45 PM' },
-    { id: 'c2', partnerName: 'Davido Official', partnerAvatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=150&q=80', lastMessage: 'Thanks for the coin gift bro! 🙏', lastTimestamp: 'Yesterday' }
-  ];
+  const conversations: Conversation[] = [];
 
-  const [messages, setMessages] = useState<Record<string, Message[]>>({
-    c1: [
-      { id: 'm1', sender: 'partner', content: 'Hey Tajudeen, check out the new JagX Connect marketplace items!', timestamp: '12:40 PM' },
-      { id: 'm2', sender: 'me', content: 'Looks fantastic! I will send some JagX coins over.', timestamp: '12:42 PM' },
-      { 
-        id: 'm3', 
-        sender: 'partner', 
-        content: 'This is confidential roadmap data for the upcoming VIP token pool!', 
-        timestamp: '12:45 PM',
-        isEncrypted: true,
-        pinCode: '1234',
-        tapCount: 0,
-        isRevealed: false
-      }
-    ]
-  });
+  const [messages, setMessages] = useState<Record<string, Message[]>>({});
 
   // Handlers
   const handleVotePoll = (postId: string, optionId: string) => {
@@ -1509,19 +1390,54 @@ export default function App() {
     }
   }, [posts]);
 
-  const handleCreatePostSubmit = (text: string) => {
+  const handleCreatePostSubmit = async (text: string) => {
+    if (!text.trim() && !selectedImageForPost && !selectedVideoForPost) {
+      triggerToast('⚠️ Write something or attach media first.');
+      return;
+    }
+    setIsPublishingPost(true);
+
     const authorName = currentUser?.name || 'Tajudeen Gbadamosi';
     const authorHandle = currentUser?.handle || '@jagx_tajudeen';
     const authorAvatar = currentUser?.avatar || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80';
 
+    let finalImageUrl = selectedImageForPost || undefined;
+    let finalVideoUrl = selectedVideoForPost || undefined;
+
+    // If the user picked a real file from their device, upload it to Supabase
+    // Storage so it gets a stable public URL instead of a giant data: URL.
+    if (isSupabaseConfigured() && selectedPostMediaFile && currentUser?.id) {
+      const ext = selectedPostMediaFile.name.split('.').pop() || 'bin';
+      const path = `${currentUser.id}/${Date.now()}.${ext}`;
+      const { error: uploadError } = await supabase.storage
+        .from('post-media')
+        .upload(path, selectedPostMediaFile, { upsert: false });
+
+      if (uploadError) {
+        triggerToast(`⚠️ Media upload failed: ${uploadError.message}`);
+        setIsPublishingPost(false);
+        return;
+      }
+      const { data: publicUrlData } = supabase.storage.from('post-media').getPublicUrl(path);
+      if (selectedPostMediaFile.type.startsWith('video/')) {
+        finalVideoUrl = publicUrlData.publicUrl;
+        finalImageUrl = undefined;
+      } else {
+        finalImageUrl = publicUrlData.publicUrl;
+        finalVideoUrl = undefined;
+      }
+    }
+
+    const localId = `p_${Date.now()}`;
     const newP: Post = {
-      id: `p_${Date.now()}`,
+      id: localId,
       authorName,
       authorHandle,
       authorAvatar,
       timestamp: 'Just now',
       content: text,
-      imageUrl: selectedImageForPost || undefined,
+      imageUrl: finalImageUrl,
+      videoUrl: finalVideoUrl,
       likesCount: 0,
       commentsCount: 0,
       giftsCount: 0,
@@ -1529,26 +1445,144 @@ export default function App() {
       isSaved: false
     };
 
-    setPosts([newP, ...posts]);
-
-    // Push to Supabase if configured
-    if (isSupabaseConfigured()) {
-      supabase.from('posts').insert([{
+    // Push to Supabase if configured — the realtime subscription (see
+    // useEffect below) will also receive this insert and reconcile the
+    // local temp id with the real DB id, and will deliver it live to
+    // every other connected device.
+    if (isSupabaseConfigured() && currentUser?.id) {
+      const { error } = await supabase.from('posts').insert([{
+        author_id: currentUser.id,
         content: text,
         author_name: authorName,
         author_handle: authorHandle,
         author_avatar: authorAvatar,
-        image_url: selectedImageForPost || null
-      }]).then(({ error }) => {
-        if (error) console.warn('Supabase insert notice:', error.message);
-      });
+        image_url: finalImageUrl || null,
+        video_url: finalVideoUrl || null
+      }]);
+      if (error) {
+        triggerToast(`⚠️ Post saved locally only — Supabase insert failed: ${error.message}`);
+      }
     }
 
+    setPosts([newP, ...posts]);
     setShowCreatePost(false);
     setSelectedImageForPost(null);
+    setSelectedVideoForPost(null);
+    setSelectedPostMediaFile(null);
     setShowImagePicker(false);
+    setIsPublishingPost(false);
     triggerToast('Post published successfully!');
   };
+
+  // Live-load posts from Supabase and keep them updated in real time across
+  // every device — this is what makes posting actually "real time" instead
+  // of only visible to the person who created it.
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+
+    let cancelled = false;
+
+    supabase
+      .from('posts')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100)
+      .then(({ data, error }) => {
+        if (cancelled || error || !data) return;
+        setPosts(
+          data.map((row: any): Post => ({
+            id: row.id,
+            authorName: row.author_name,
+            authorHandle: row.author_handle,
+            authorAvatar: row.author_avatar,
+            timestamp: new Date(row.created_at).toLocaleString(),
+            content: row.content,
+            imageUrl: row.image_url || undefined,
+            videoUrl: row.video_url || undefined,
+            likesCount: row.likes_count ?? 0,
+            commentsCount: row.comments_count ?? 0,
+            giftsCount: row.gifts_count ?? 0,
+            isLiked: false,
+            isSaved: false,
+            isSponsored: row.is_sponsored ?? false,
+            language: row.language || 'en'
+          }))
+        );
+      });
+
+    const channel = supabase
+      .channel('public:posts')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posts' }, (payload) => {
+        const row: any = payload.new;
+        setPosts((prev) => {
+          // Avoid duplicating a post we already added optimistically ourselves
+          if (prev.some((p) => p.id === row.id)) return prev;
+          const incoming: Post = {
+            id: row.id,
+            authorName: row.author_name,
+            authorHandle: row.author_handle,
+            authorAvatar: row.author_avatar,
+            timestamp: 'Just now',
+            content: row.content,
+            imageUrl: row.image_url || undefined,
+            videoUrl: row.video_url || undefined,
+            likesCount: row.likes_count ?? 0,
+            commentsCount: row.comments_count ?? 0,
+            giftsCount: row.gifts_count ?? 0,
+            isLiked: false,
+            isSaved: false,
+            isSponsored: row.is_sponsored ?? false,
+            language: row.language || 'en'
+          };
+          return [incoming, ...prev.filter((p) => !p.id.startsWith('p_'))];
+        });
+      })
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // Join/leave a real live-chat broadcast channel whenever the user opens
+  // or closes a live room — this is what makes live chat actually live
+  // across every device watching the same stream, not just the sender's.
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !activeLiveRoom) {
+      liveChatChannelRef.current = null;
+      return;
+    }
+    const channel = supabase.channel(`live-room-${activeLiveRoom.id}`);
+    channel
+      .on('broadcast', { event: 'chat' }, (payload) => {
+        const msg = payload.payload as { id: string; user: string; text: string; avatar: string };
+        setLiveStreamMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
+      })
+      .subscribe();
+    liveChatChannelRef.current = channel;
+
+    return () => {
+      supabase.removeChannel(channel);
+      liveChatChannelRef.current = null;
+    };
+  }, [activeLiveRoom?.id]);
+
+  const sendLiveChatMessage = (text: string) => {
+    if (!text.trim()) return;
+    const newEntry = {
+      id: `lm_${Date.now()}`,
+      user: currentUser?.name || 'Tajudeen',
+      text: text.trim(),
+      avatar: currentUser?.avatar || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=100&q=80'
+    };
+    setLiveStreamMessages((prev) => [...prev, newEntry]);
+    liveChatChannelRef.current?.send({ type: 'broadcast', event: 'chat', payload: newEntry });
+    setNewLiveMsgText('');
+    triggerHaptic(40);
+  };
+
+
 
   // Camera stream initializer for QR Scanner modal
   useEffect(() => {
@@ -1602,7 +1636,7 @@ export default function App() {
       )}
 
       {/* TOP HEADER BAR */}
-      <header className="sticky top-0 z-40 bg-[#14161D]/90 backdrop-blur-md px-3 py-2.5 border-b border-[#1F222C] flex items-center justify-between">
+      <header className="sticky top-0 z-40 bg-[#14161D]/90 backdrop-blur-md px-3 py-2.5 border-b border-[#1F222C] flex items-center justify-between" style={{ paddingTop: 'calc(0.625rem + env(safe-area-inset-top))' }}>
         <div className="flex items-center gap-2">
           <span className={`text-lg font-black tracking-tight ${accentColors.text}`}>JagX Connect</span>
           
@@ -1617,7 +1651,7 @@ export default function App() {
             title="Click for Supabase & Env Var configuration"
           >
             {isSupabaseConfigured() ? <Wifi className="w-3 h-3" /> : <Database className="w-3 h-3" />}
-            <span>{isSupabaseConfigured() ? 'Supabase Live' : 'Offline / Local'}</span>
+            <span className="hidden sm:inline">{isSupabaseConfigured() ? 'Supabase Live' : 'Offline / Local'}</span>
           </button>
         </div>
 
@@ -2142,6 +2176,10 @@ export default function App() {
 
                     {post.imageUrl && (
                       <img src={post.imageUrl} className="w-full h-48 object-cover rounded-xl border border-[#1F222C]" />
+                    )}
+
+                    {post.videoUrl && (
+                      <video src={post.videoUrl} controls playsInline className="w-full h-48 object-cover rounded-xl border border-[#1F222C] bg-black" />
                     )}
 
                     {/* Actions */}
@@ -3150,6 +3188,9 @@ export default function App() {
                       {post.imageUrl && (
                         <img src={post.imageUrl} className="w-full h-36 object-cover rounded-xl" />
                       )}
+                      {post.videoUrl && (
+                        <video src={post.videoUrl} controls playsInline className="w-full h-36 object-cover rounded-xl bg-black" />
+                      )}
                       <div className="flex items-center gap-4 text-xs text-gray-400 pt-1 border-t border-[#1F222C]">
                         <span>❤️ {post.likesCount}</span>
                         <span>💬 {post.commentsCount}</span>
@@ -3618,44 +3659,75 @@ export default function App() {
               className="w-full bg-[#1F222C] border border-gray-700 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-yellow-500"
             />
 
-            {/* Toggle Image Picker */}
+            {/* Real device media picker: photo, video, or AI-generated */}
             <div className="space-y-2">
-              <button 
-                type="button"
-                onClick={() => setShowImagePicker(!showImagePicker)}
-                className="flex items-center gap-2 text-xs text-yellow-400 font-semibold bg-yellow-500/10 px-3 py-1.5 rounded-xl border border-yellow-500/20 hover:bg-yellow-500/20 w-full justify-center"
-              >
-                <ImageIcon className="w-4 h-4" />
-                <span>{showImagePicker ? 'Hide Image Selector' : 'Attach Image to Post'}</span>
-              </button>
+              <div className="grid grid-cols-3 gap-2">
+                <label className="flex flex-col items-center gap-1 text-[10px] text-yellow-400 font-semibold bg-yellow-500/10 py-2 rounded-xl border border-yellow-500/20 hover:bg-yellow-500/20 cursor-pointer">
+                  <ImageIcon className="w-4 h-4" />
+                  <span>Photo</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      setSelectedPostMediaFile(file);
+                      setSelectedVideoForPost(null);
+                      const reader = new FileReader();
+                      reader.onload = () => setSelectedImageForPost(reader.result as string);
+                      reader.readAsDataURL(file);
+                    }}
+                  />
+                </label>
+                <label className="flex flex-col items-center gap-1 text-[10px] text-blue-400 font-semibold bg-blue-500/10 py-2 rounded-xl border border-blue-500/20 hover:bg-blue-500/20 cursor-pointer">
+                  <Video className="w-4 h-4" />
+                  <span>Video</span>
+                  <input
+                    type="file"
+                    accept="video/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      setSelectedPostMediaFile(file);
+                      setSelectedImageForPost(null);
+                      const reader = new FileReader();
+                      reader.onload = () => setSelectedVideoForPost(reader.result as string);
+                      reader.readAsDataURL(file);
+                    }}
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCreatePost(false);
+                    setShowAiImageStudioModal(true);
+                  }}
+                  className="flex flex-col items-center gap-1 text-[10px] text-purple-400 font-semibold bg-purple-500/10 py-2 rounded-xl border border-purple-500/20 hover:bg-purple-500/20"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span>AI Image</span>
+                </button>
+              </div>
 
-              {showImagePicker && (
-                <div className="space-y-2 pt-1">
-                  <p className="text-[10px] text-gray-400 font-medium">Select a placeholder media image:</p>
-                  <div className="grid grid-cols-3 gap-2 max-h-28 overflow-y-auto p-1 bg-[#1F222C] rounded-xl">
-                    {placeholderImages.map((img, i) => (
-                      <div 
-                        key={i} 
-                        onClick={() => setSelectedImageForPost(selectedImageForPost === img ? null : img)}
-                        className={`relative rounded-lg overflow-hidden cursor-pointer border-2 transition h-14 ${selectedImageForPost === img ? 'border-yellow-500 ring-2 ring-yellow-500/50' : 'border-transparent hover:border-gray-600'}`}
-                      >
-                        <img src={img} className="w-full h-full object-cover" />
-                        {selectedImageForPost === img && (
-                          <div className="absolute inset-0 bg-yellow-500/40 flex items-center justify-center">
-                            <Check className="w-4 h-4 text-black font-black" />
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+              {selectedImageForPost && (
+                <div className="relative rounded-xl overflow-hidden h-32 border border-yellow-500">
+                  <img src={selectedImageForPost} className="w-full h-full object-cover" />
+                  <button
+                    onClick={() => { setSelectedImageForPost(null); setSelectedPostMediaFile(null); }}
+                    className="absolute top-1 right-1 bg-black/70 rounded-full p-1 text-white"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
                 </div>
               )}
 
-              {selectedImageForPost && !showImagePicker && (
-                <div className="relative rounded-xl overflow-hidden h-20 border border-yellow-500">
-                  <img src={selectedImageForPost} className="w-full h-full object-cover" />
-                  <button 
-                    onClick={() => setSelectedImageForPost(null)}
+              {selectedVideoForPost && (
+                <div className="relative rounded-xl overflow-hidden h-40 border border-blue-500 bg-black">
+                  <video src={selectedVideoForPost} controls className="w-full h-full object-contain" />
+                  <button
+                    onClick={() => { setSelectedVideoForPost(null); setSelectedPostMediaFile(null); }}
                     className="absolute top-1 right-1 bg-black/70 rounded-full p-1 text-white"
                   >
                     <X className="w-3 h-3" />
@@ -3665,13 +3737,14 @@ export default function App() {
             </div>
 
             <button 
+              disabled={isPublishingPost}
               onClick={() => {
                 const el = document.getElementById('post-text-input') as HTMLTextAreaElement;
-                if (el && el.value) handleCreatePostSubmit(el.value);
+                handleCreatePostSubmit(el?.value || '');
               }}
-              className="w-full bg-yellow-500 text-black font-bold text-xs py-2.5 rounded-xl hover:bg-yellow-400 transition"
+              className="w-full bg-yellow-500 text-black font-bold text-xs py-2.5 rounded-xl hover:bg-yellow-400 transition disabled:opacity-50"
             >
-              Publish Post
+              {isPublishingPost ? 'Publishing...' : 'Publish Post'}
             </button>
           </div>
         </div>
@@ -5516,33 +5589,13 @@ export default function App() {
                 placeholder="Send a message to host..."
                 onKeyDown={e => {
                   if (e.key === 'Enter' && newLiveMsgText.trim()) {
-                    const newEntry = {
-                      id: `lm_${Date.now()}`,
-                      user: currentUser?.name || 'Tajudeen',
-                      text: newLiveMsgText.trim(),
-                      avatar: currentUser?.avatar || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=100&q=80'
-                    };
-                    setLiveStreamMessages(prev => [...prev, newEntry]);
-                    setNewLiveMsgText('');
-                    triggerHaptic(40);
+                    sendLiveChatMessage(newLiveMsgText);
                   }
                 }}
                 className="flex-1 bg-black/70 border border-white/20 rounded-full px-4 py-2 text-xs text-white placeholder-gray-400 focus:outline-none focus:border-yellow-500 backdrop-blur-md"
               />
               <button 
-                onClick={() => {
-                  if (newLiveMsgText.trim()) {
-                    const newEntry = {
-                      id: `lm_${Date.now()}`,
-                      user: currentUser?.name || 'Tajudeen',
-                      text: newLiveMsgText.trim(),
-                      avatar: currentUser?.avatar || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=100&q=80'
-                    };
-                    setLiveStreamMessages(prev => [...prev, newEntry]);
-                    setNewLiveMsgText('');
-                    triggerHaptic(40);
-                  }
-                }}
+                onClick={() => sendLiveChatMessage(newLiveMsgText)}
                 className="bg-yellow-500 text-black p-2.5 rounded-full font-bold hover:bg-yellow-400 transition"
               >
                 <Send className="w-4 h-4" />
@@ -6173,7 +6226,7 @@ export default function App() {
       )}
 
       {/* BOTTOM NAVIGATION BAR */}
-      <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-[#14161D]/95 backdrop-blur-md border-t border-[#1F222C] px-2 py-2 flex items-center justify-around z-40">
+      <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-[#14161D]/95 backdrop-blur-md border-t border-[#1F222C] px-2 py-2 flex items-center justify-around z-40" style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}>
         <button onClick={() => setActiveTab('feed')} className={`flex flex-col items-center gap-1 p-1 ${activeTab === 'feed' ? 'text-yellow-400' : 'text-gray-500'}`}>
           <Home className="w-5 h-5" />
           <span className="text-[9px] font-bold">Feed</span>
