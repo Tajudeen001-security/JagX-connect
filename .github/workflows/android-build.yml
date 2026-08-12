@@ -41,6 +41,10 @@ jobs:
           if [ ! -d "android" ]; then
             npx cap add android
           fi
+
+      - name: Generate app icon & splash screen from resources/
+        run: |
+          npx capacitor-assets generate --android
           npx cap sync android
 
       - name: Add Firebase google-services.json (for native push notifications)

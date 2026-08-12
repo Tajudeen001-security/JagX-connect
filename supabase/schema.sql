@@ -235,8 +235,18 @@ create policy "Users can delete their own post media"
 
 -- 10. Turn on realtime so posts/comments/notifications/DMs push to the
 -- app live instead of needing a refresh
-alter publication supabase_realtime add table public.posts;
-alter publication supabase_realtime add table public.post_comments;
-alter publication supabase_realtime add table public.notifications;
-alter publication supabase_realtime add table public.products;
-alter publication supabase_realtime add table public.messages;
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['posts', 'post_comments', 'notifications', 'products', 'messages']
+  loop
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
+    ) then
+      execute format('alter publication supabase_realtime add table public.%I', t);
+    end if;
+  end loop;
+end;
+$$;

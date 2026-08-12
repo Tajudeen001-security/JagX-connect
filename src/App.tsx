@@ -90,7 +90,7 @@ import {
   Vote
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured, saveOfflineCache, loadOfflineCache } from './lib/supabase';
-import { jagxGenerateImage, imageResultToDataUrl, isJagxAIConfigured } from './lib/jagxAI';
+import { jagxGenerateImage, imageResultToDataUrl, isJagxAIConfigured, jagxChat, jagxSpeechToText, playTextToSpeech } from './lib/jagxAI';
 
 // --- DATA TYPES ---
 interface CommentItem {
@@ -217,8 +217,20 @@ export default function App() {
   const [showCreatePost, setShowCreatePost] = useState(false);
   const [showCall, setShowCall] = useState<{ partner: string; isVideo: boolean } | null>(null);
   const [activeChat, setActiveChat] = useState<Conversation | null>(null);
+  const [showNewMessageModal, setShowNewMessageModal] = useState(false);
+  const [newMessageSearchQuery, setNewMessageSearchQuery] = useState('');
+  const [newMessageSearchResults, setNewMessageSearchResults] = useState<{ id: string; display_name: string; handle: string; avatar_url: string | null }[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [showCreateProduct, setShowCreateProduct] = useState(false);
+  const [showAiAssistant, setShowAiAssistant] = useState(false);
+  const [aiAssistantMessages, setAiAssistantMessages] = useState<{ role: 'user' | 'assistant'; text: string }[]>([]);
+  const [aiAssistantInput, setAiAssistantInput] = useState('');
+  const [isAiAssistantLoading, setIsAiAssistantLoading] = useState(false);
+  const [isRecordingVoiceNote, setIsRecordingVoiceNote] = useState(false);
+  const voiceRecorderRef = useRef<MediaRecorder | null>(null);
+  const voiceChunksRef = useRef<Blob[]>([]);
+  const [isReadingPostAloud, setIsReadingPostAloud] = useState<string | null>(null);
+  const postTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [newProductTitle, setNewProductTitle] = useState('');
   const [newProductDescription, setNewProductDescription] = useState('');
   const [newProductPriceCoins, setNewProductPriceCoins] = useState('');
@@ -249,6 +261,7 @@ export default function App() {
   const [animatingHeartPostId, setAnimatingHeartPostId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeCommentsPostId, setActiveCommentsPostId] = useState<string | null>(null);
+  const [reelViewIndex, setReelViewIndex] = useState(0);
   const [newCommentInput, setNewCommentInput] = useState('');
   const [feedSearchQuery, setFeedSearchQuery] = useState('');
   const [activeHashtagFilter, setActiveHashtagFilter] = useState<string | null>(null);
@@ -406,13 +419,15 @@ export default function App() {
     { id: 'nft3', name: 'Web3 Voice Stage Host', image: 'https://images.unsplash.com/photo-1634017839464-5c339ebe3cb4?auto=format&fit=crop&w=300&q=80', rarity: 'Epic', valueCoins: 2500 }
   ]);
   const [tickerActiveIndex, setTickerActiveIndex] = useState(0);
-  const tickerItems = [
-    '⚽ Arsenal 2 - 1 Chelsea (88\')',
+  const [liveSportsItems, setLiveSportsItems] = useState<string[]>([]);
+  const staticTickerItems = [
     '🪙 JAGX Token +18.4% • $0.245 USD',
     '⚡ Lagos Web3 Summit Live Stream Starts in 15m',
-    '🏆 Davido Official sent 10,000 Golden Lion King Gift!',
-    '🏀 Lakers 112 - 108 Celtics (FT)'
+    '🏆 Davido Official sent 10,000 Golden Lion King Gift!'
   ];
+  const tickerItems = liveSportsItems.length > 0
+    ? [...liveSportsItems, ...staticTickerItems]
+    : ['⚽ Loading live scores...', ...staticTickerItems];
   const [isBionicReading, setIsBionicReading] = useState(false);
   const [liveStreamTab, setLiveStreamTab] = useState<'streams' | 'audio_stage'>('streams');
   const [activeVoiceRoom, setActiveVoiceRoom] = useState<{
@@ -856,7 +871,7 @@ export default function App() {
   const liveRooms: LiveRoom[] = [];
 
   // Conversations & DMs
-  const conversations: Conversation[] = [];
+  const [conversations, setConversations] = useState<Conversation[]>([]);
 
   // Marketplace listings
   const [products, setProducts] = useState<Product[]>([]);
@@ -888,8 +903,9 @@ export default function App() {
     }));
   };
 
-  const handleSendMessage = (convId: string) => {
+  const handleSendMessage = async (convId: string) => {
     if (!chatInputText.trim() && !chatSelectedImage) return;
+    if (!activeChat) return;
 
     triggerHaptic([30, 60]);
 
@@ -912,8 +928,30 @@ export default function App() {
       [convId]: [...(prev[convId] || []), newMsg]
     }));
 
+    const sentText = chatInputText.trim();
     setChatInputText('');
     setChatSelectedImage(null);
+
+    if (isSupabaseConfigured() && currentUser?.id && !convId.startsWith('local_')) {
+      const { error } = await supabase.from('messages').insert([{
+        conversation_id: convId,
+        sender_id: currentUser.id,
+        content: sentText,
+        image_url: chatSelectedImage || null,
+        is_encrypted: isEncryptNextMessage,
+        pin_code: isEncryptNextMessage ? (nextMessagePin || '1234') : null,
+        expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
+        auto_destroy_duration: autoDestroySeconds > 0 ? autoDestroySeconds : null
+      }]);
+      if (error) {
+        triggerToast(`⚠️ Sent locally only: ${error.message}`);
+      } else {
+        await supabase.from('conversations').update({
+          last_message: sentText || '📷 Photo',
+          last_timestamp: new Date().toISOString()
+        }).eq('id', convId);
+      }
+    }
 
     if (isEncryptNextMessage) {
       triggerToast(`🔒 Encrypted PIN message sent! PIN: ${nextMessagePin || '1234'}`);
@@ -923,6 +961,148 @@ export default function App() {
       triggerToast('Message sent!');
     }
   };
+
+  // Start a real conversation with another JagX user (or open the
+  // existing one if it already exists), then switch to it.
+  const startConversationWith = async (partner: { id: string; name: string; avatar: string }) => {
+    if (!isSupabaseConfigured() || !currentUser?.id) {
+      triggerToast('⚠️ Sign in and connect Supabase to message other users.');
+      return;
+    }
+    const [userA, userB] = [currentUser.id, partner.id].sort();
+    const { data: existing } = await supabase
+      .from('conversations')
+      .select('*')
+      .eq('user_a', userA)
+      .eq('user_b', userB)
+      .maybeSingle();
+
+    let convId = existing?.id;
+    if (!convId) {
+      const { data: created, error } = await supabase
+        .from('conversations')
+        .insert([{ user_a: userA, user_b: userB, last_message: null }])
+        .select()
+        .single();
+      if (error || !created) {
+        triggerToast(`⚠️ Couldn't start chat: ${error?.message}`);
+        return;
+      }
+      convId = created.id;
+    }
+
+    const conv: Conversation = {
+      id: convId,
+      partnerName: partner.name,
+      partnerAvatar: partner.avatar,
+      lastMessage: existing?.last_message || '',
+      lastTimestamp: existing?.last_timestamp ? new Date(existing.last_timestamp).toLocaleString() : 'Just now'
+    };
+    setConversations(prev => (prev.some(c => c.id === convId) ? prev : [conv, ...prev]));
+    setActiveChat(conv);
+    setShowNewMessageModal(false);
+  };
+
+  // Live-load this user's conversations and keep them synced in real time
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !currentUser?.id) return;
+    let cancelled = false;
+
+    const load = async () => {
+      const { data, error } = await supabase
+        .from('conversations')
+        .select('*')
+        .or(`user_a.eq.${currentUser.id},user_b.eq.${currentUser.id}`)
+        .order('last_timestamp', { ascending: false });
+      if (cancelled || error || !data) return;
+
+      const partnerIds = data.map((c: any) => (c.user_a === currentUser.id ? c.user_b : c.user_a));
+      const { data: profilesData } = partnerIds.length
+        ? await supabase.from('profiles').select('*').in('id', partnerIds)
+        : { data: [] as any[] };
+      const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
+
+      setConversations(data.map((c: any): Conversation => {
+        const partnerId = c.user_a === currentUser.id ? c.user_b : c.user_a;
+        const partner = profileMap.get(partnerId);
+        return {
+          id: c.id,
+          partnerName: partner?.display_name || 'JagX User',
+          partnerAvatar: partner?.avatar_url || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80',
+          lastMessage: c.last_message || '',
+          lastTimestamp: new Date(c.last_timestamp).toLocaleString()
+        };
+      }));
+    };
+    load();
+
+    const channel = supabase
+      .channel(`conversations-${currentUser.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'conversations' }, () => load())
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, [currentUser?.id]);
+
+  // Live-load messages for whichever conversation is open, and keep them
+  // synced in real time — this is what makes DMs actually two-way live.
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !activeChat || activeChat.id.startsWith('local_')) return;
+    let cancelled = false;
+
+    supabase.from('messages').select('*').eq('conversation_id', activeChat.id)
+      .order('created_at', { ascending: true })
+      .then(({ data, error }) => {
+        if (cancelled || error || !data) return;
+        setMessages(prev => ({
+          ...prev,
+          [activeChat.id]: data.map((row: any): Message => ({
+            id: row.id,
+            sender: row.sender_id === currentUser?.id ? 'me' : 'partner',
+            content: row.content,
+            timestamp: new Date(row.created_at).toLocaleString(),
+            isEncrypted: row.is_encrypted,
+            pinCode: row.pin_code || undefined,
+            autoDestroyDuration: row.auto_destroy_duration || undefined,
+            expiresAt: row.expires_at ? new Date(row.expires_at).getTime() : undefined,
+            imageUrl: row.image_url || undefined,
+            audioUrl: row.audio_url || undefined
+          }))
+        }));
+      });
+
+    const channel = supabase
+      .channel(`messages-${activeChat.id}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${activeChat.id}` }, (payload) => {
+        const row: any = payload.new;
+        setMessages(prev => {
+          const existing = prev[activeChat.id] || [];
+          if (existing.some(m => m.id === row.id)) return prev;
+          const incoming: Message = {
+            id: row.id,
+            sender: row.sender_id === currentUser?.id ? 'me' : 'partner',
+            content: row.content,
+            timestamp: 'Just now',
+            isEncrypted: row.is_encrypted,
+            pinCode: row.pin_code || undefined,
+            autoDestroyDuration: row.auto_destroy_duration || undefined,
+            expiresAt: row.expires_at ? new Date(row.expires_at).getTime() : undefined,
+            imageUrl: row.image_url || undefined,
+            audioUrl: row.audio_url || undefined
+          };
+          return { ...prev, [activeChat.id]: [...existing.filter(m => !m.id.startsWith('m_')), incoming] };
+        });
+      })
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, [activeChat?.id, currentUser?.id]);
 
   // Real Web Audio API Microphone Recorder
   const startAudioRecording = async () => {
@@ -1140,13 +1320,19 @@ export default function App() {
 
   const handleAddComment = (postId: string) => {
     if (!newCommentInput.trim()) return;
+    if (!currentUser) {
+      setAuthMode('signup');
+      setShowAuthModal(true);
+      triggerToast('⚠️ Create an account or log in to comment.');
+      return;
+    }
     
     triggerHaptic([25, 50]);
 
     const newComment: CommentItem = {
       id: `comm_${Date.now()}`,
-      authorName: currentUser?.name || 'Tajudeen Gbadamosi',
-      authorAvatar: currentUser?.avatar || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80',
+      authorName: currentUser.name,
+      authorAvatar: currentUser.avatar,
       text: newCommentInput.trim(),
       timestamp: 'Just now'
     };
@@ -1329,7 +1515,7 @@ export default function App() {
       giftName: gift.name,
       giftIcon: gift.icon,
       giftCoins: totalCost,
-      senderName: currentUser?.name || 'Tajudeen Gbadamosi',
+      senderName: currentUser?.name || 'Guest',
       category: gift.category,
       multiplier: giftMultiplier,
       fxType: gift.fxType
@@ -1351,7 +1537,7 @@ export default function App() {
         ...prev,
         {
           id: `lm_${Date.now()}`,
-          user: currentUser?.name || 'Tajudeen Gbadamosi',
+          user: currentUser?.name || 'Guest',
           text: `🎁 SENT ${giftMultiplier > 1 ? `x${giftMultiplier} ` : ''}${gift.icon} ${gift.name} (🪙${totalCost.toLocaleString()})! 🔥 Streak x${newCount}`,
           avatar: currentUser?.avatar || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
         }
@@ -1412,16 +1598,105 @@ export default function App() {
     }
   }, [posts]);
 
+  const openCreatePost = () => {
+    if (!currentUser) {
+      setAuthMode('signup');
+      setShowAuthModal(true);
+      triggerToast('⚠️ Create an account or log in to post.');
+      return;
+    }
+    setShowCreatePost(true);
+  };
+
+  const handleSendAiAssistantMessage = async () => {
+    if (!aiAssistantInput.trim()) return;
+    if (!isJagxAIConfigured()) {
+      triggerToast('⚠️ JagX AI key not set — add VITE_JAGX_AI_API_KEY to your .env.');
+      return;
+    }
+    const userText = aiAssistantInput.trim();
+    setAiAssistantMessages(prev => [...prev, { role: 'user', text: userText }]);
+    setAiAssistantInput('');
+    setIsAiAssistantLoading(true);
+    try {
+      const result = await jagxChat(userText);
+      setAiAssistantMessages(prev => [...prev, { role: 'assistant', text: result.response }]);
+    } catch (err) {
+      setAiAssistantMessages(prev => [...prev, { role: 'assistant', text: `⚠️ ${err instanceof Error ? err.message : 'Something went wrong.'}` }]);
+    } finally {
+      setIsAiAssistantLoading(false);
+    }
+  };
+
+  // Voice-to-text: record a short clip, transcribe it via JagX AI, and
+  // drop the text straight into whichever composer called it.
+  const startVoiceNoteRecording = async (onTranscribed: (text: string) => void) => {
+    if (!isJagxAIConfigured()) {
+      triggerToast('⚠️ JagX AI key not set — voice-to-text needs VITE_JAGX_AI_API_KEY.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      voiceChunksRef.current = [];
+      recorder.ondataavailable = (e) => voiceChunksRef.current.push(e.data);
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        setIsRecordingVoiceNote(false);
+        const blob = new Blob(voiceChunksRef.current, { type: 'audio/webm' });
+        try {
+          triggerToast('🎙️ Transcribing...');
+          const result = await jagxSpeechToText(blob);
+          onTranscribed(result.text);
+        } catch (err) {
+          triggerToast(`⚠️ Transcription failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        }
+      };
+      recorder.start();
+      voiceRecorderRef.current = recorder;
+      setIsRecordingVoiceNote(true);
+    } catch (err) {
+      triggerToast('⚠️ Microphone access denied or unavailable.');
+    }
+  };
+
+  const stopVoiceNoteRecording = () => {
+    voiceRecorderRef.current?.stop();
+  };
+
+  const handleReadPostAloud = async (postId: string, content: string) => {
+    if (!isJagxAIConfigured()) {
+      triggerToast('⚠️ JagX AI key not set — read-aloud needs VITE_JAGX_AI_API_KEY.');
+      return;
+    }
+    if (!content.trim()) return;
+    setIsReadingPostAloud(postId);
+    try {
+      await playTextToSpeech(content.slice(0, 1000));
+    } catch (err) {
+      triggerToast(`⚠️ Couldn't read this aloud: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setIsReadingPostAloud(null);
+    }
+  };
+
   const handleCreatePostSubmit = async (text: string) => {
     if (!text.trim() && !selectedImageForPost && !selectedVideoForPost) {
       triggerToast('⚠️ Write something or attach media first.');
       return;
     }
+    if (!currentUser) {
+      setShowCreatePost(false);
+      setAuthMode('signup');
+      setShowAuthModal(true);
+      triggerToast('⚠️ Create an account or log in to post.');
+      return;
+    }
     setIsPublishingPost(true);
 
-    const authorName = currentUser?.name || 'Tajudeen Gbadamosi';
-    const authorHandle = currentUser?.handle || '@jagx_tajudeen';
-    const authorAvatar = currentUser?.avatar || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80';
+    const authorName = currentUser.name;
+    const authorHandle = currentUser.handle;
+    const authorAvatar = currentUser.avatar;
 
     let finalImageUrl = selectedImageForPost || undefined;
     let finalVideoUrl = selectedVideoForPost || undefined;
@@ -1678,6 +1953,80 @@ export default function App() {
     };
   }, []);
 
+  // Real coin wallet: load balance from Supabase on login, then keep it
+  // synced there any time it changes locally (gifting, staking, etc.),
+  // and pick up changes made from another device live.
+  const [walletLoaded, setWalletLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !currentUser?.id) {
+      setWalletLoaded(true); // offline mode: local number is the source of truth
+      return;
+    }
+    setWalletLoaded(false);
+    supabase.from('profiles').select('coins').eq('id', currentUser.id).single()
+      .then(({ data, error }) => {
+        if (!error && data) setUserCoins(data.coins);
+        setWalletLoaded(true);
+      });
+
+    const channel = supabase
+      .channel(`wallet-${currentUser.id}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${currentUser.id}` }, (payload) => {
+        const row: any = payload.new;
+        if (typeof row.coins === 'number') setUserCoins(row.coins);
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !currentUser?.id || !walletLoaded) return;
+    const t = setTimeout(() => {
+      supabase.from('profiles').update({ coins: userCoins }).eq('id', currentUser.id)
+        .then(({ error }) => { if (error) console.warn('Coin balance sync failed:', error.message); });
+    }, 800); // debounce so rapid gifting doesn't spam writes
+    return () => clearTimeout(t);
+  }, [userCoins, currentUser?.id, walletLoaded]);
+
+  // Real live sports scores from TheSportsDB (free tier, key "3" is their
+  // public test key — for higher limits, get your own free key at
+  // thesportsdb.com/api.php and swap it in below).
+  useEffect(() => {
+    const SPORTSDB_KEY = '3';
+    let cancelled = false;
+
+    const fetchScores = async () => {
+      try {
+        const today = new Date().toISOString().split('T')[0];
+        const res = await fetch(
+          `https://www.thesportsdb.com/api/v1/json/${SPORTSDB_KEY}/eventsday.php?d=${today}&s=Soccer`
+        );
+        if (!res.ok) throw new Error(`TheSportsDB request failed (${res.status})`);
+        const data = await res.json();
+        if (cancelled) return;
+
+        const events = (data.events || []) as any[];
+        const withScores = events.filter(e => e.intHomeScore !== null && e.intAwayScore !== null);
+        const items = withScores.slice(0, 6).map(e => {
+          const status = e.strStatus === 'Match Finished' ? 'FT' : (e.strStatus || e.strTime || 'LIVE');
+          return `⚽ ${e.strHomeTeam} ${e.intHomeScore} - ${e.intAwayScore} ${e.strAwayTeam} (${status})`;
+        });
+        setLiveSportsItems(items.length > 0 ? items : ['⚽ No live matches right now']);
+      } catch (err) {
+        if (!cancelled) {
+          console.warn('TheSportsDB fetch failed:', err);
+          setLiveSportsItems(['⚽ Live scores unavailable — check connection']);
+        }
+      }
+    };
+
+    fetchScores();
+    const interval = setInterval(fetchScores, 2 * 60 * 1000); // refresh every 2 minutes
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
   // Live-load this user's notifications and keep them synced in real time
   useEffect(() => {
     if (!isSupabaseConfigured() || !currentUser?.id) return;
@@ -1901,7 +2250,7 @@ export default function App() {
                   ⚡ LIVE TICKER
                 </span>
                 <span className="text-gray-200 font-bold truncate text-[11px] animate-in fade-in duration-300">
-                  {tickerItems[tickerActiveIndex]}
+                  {tickerItems[tickerActiveIndex % tickerItems.length]}
                 </span>
               </div>
               <button 
@@ -2081,7 +2430,7 @@ export default function App() {
             {/* Post trigger card */}
             <div className="px-4">
               <div 
-                onClick={() => setShowCreatePost(true)}
+                onClick={openCreatePost}
                 className="bg-[#14161D] border border-[#1F222C] p-3 rounded-xl flex items-center gap-3 cursor-pointer hover:border-gray-700 transition"
               >
                 <img src={currentUser?.avatar || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80"} className="w-8 h-8 rounded-full object-cover" />
@@ -2386,6 +2735,15 @@ export default function App() {
                         <span>{post.giftsCount}</span>
                       </button>
 
+                      <button
+                        onClick={() => handleReadPostAloud(post.id, post.content)}
+                        disabled={isReadingPostAloud === post.id}
+                        className="p-1.5 rounded-full text-gray-400 hover:text-purple-400 transition"
+                        title="Read aloud (JagX AI)"
+                      >
+                        {isReadingPostAloud === post.id ? <Sparkles className="w-4 h-4 animate-spin text-purple-400" /> : <Volume2 className="w-4 h-4" />}
+                      </button>
+
                       <button 
                         onClick={() => handleToggleSave(post.id)}
                         className={`p-1.5 rounded-full transition ${post.isSaved ? 'text-yellow-400 bg-yellow-500/10' : 'text-gray-400 hover:text-white'}`}
@@ -2449,7 +2807,7 @@ export default function App() {
                       <MessageSquare className="w-8 h-8 text-gray-600 mx-auto" />
                       <p className="text-xs text-gray-400 font-semibold">No posts yet</p>
                       <p className="text-[11px] text-gray-500">Be the first to share something on JagX.</p>
-                      <button onClick={() => setShowCreatePost(true)} className="bg-yellow-500 text-black text-xs font-bold px-4 py-1.5 rounded-full mt-1">
+                      <button onClick={openCreatePost} className="bg-yellow-500 text-black text-xs font-bold px-4 py-1.5 rounded-full mt-1">
                         Create Post
                       </button>
                     </>
@@ -2461,61 +2819,85 @@ export default function App() {
         )}
 
         {/* 2. REELS SCREEN */}
-        {activeTab === 'reels' && (
-          reels.length === 0 ? (
+        {activeTab === 'reels' && (() => {
+          const videoPosts = posts.filter(p => p.videoUrl);
+          const clampedIndex = Math.min(reelViewIndex, Math.max(videoPosts.length - 1, 0));
+          const activeReel = videoPosts[clampedIndex];
+
+          return videoPosts.length === 0 ? (
             <div className="h-[calc(100vh-120px)] bg-black flex flex-col items-center justify-center gap-3 p-6 text-center">
               <Video className="w-10 h-10 text-gray-600" />
               <p className="text-sm font-bold text-white">No reels yet</p>
               <p className="text-xs text-gray-400">Be the first to post a short video — it'll show up here for everyone.</p>
               <button
-                onClick={() => setShowCreatePost(true)}
+                onClick={openCreatePost}
                 className="bg-yellow-500 text-black font-bold text-xs px-4 py-2 rounded-full mt-2"
               >
                 Create a Reel
               </button>
             </div>
           ) : (
-          <div className="relative h-[calc(100vh-120px)] bg-black overflow-hidden flex flex-col justify-end p-4">
-            <img src="https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80" className="absolute inset-0 w-full h-full object-cover opacity-60" />
-            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/30 to-transparent" />
+          <div
+            className="relative h-[calc(100vh-120px)] bg-black overflow-hidden flex flex-col justify-end p-4"
+            onClick={(e) => {
+              // Tap top half = previous reel, bottom half = next reel
+              const rect = e.currentTarget.getBoundingClientRect();
+              const tapY = (e as React.MouseEvent).clientY - rect.top;
+              if (tapY < rect.height / 2) {
+                setReelViewIndex(i => (i - 1 + videoPosts.length) % videoPosts.length);
+              } else {
+                setReelViewIndex(i => (i + 1) % videoPosts.length);
+              }
+            }}
+          >
+            <video
+              key={activeReel.id}
+              src={activeReel.videoUrl}
+              autoPlay
+              loop
+              playsInline
+              muted
+              className="absolute inset-0 w-full h-full object-cover"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/30 to-transparent pointer-events-none" />
 
             {/* Reel info & action rail */}
-            <div className="relative z-10 flex items-end justify-between">
+            <div className="relative z-10 flex items-end justify-between pointer-events-none">
               <div className="space-y-3 max-w-[75%]">
-                <div className="flex items-center gap-2">
-                  <img src={reels[0].creatorAvatar} className="w-10 h-10 rounded-full border-2 border-yellow-500" />
+                <div className="flex items-center gap-2 pointer-events-auto">
+                  <img src={activeReel.authorAvatar} className="w-10 h-10 rounded-full border-2 border-yellow-500" />
                   <div>
-                    <h4 className="text-sm font-bold text-white">{reels[0].creatorName}</h4>
-                    <p className="text-[11px] text-gray-300">{reels[0].creatorHandle}</p>
+                    <h4 className="text-sm font-bold text-white">{activeReel.authorName}</h4>
+                    <p className="text-[11px] text-gray-300">{activeReel.authorHandle}</p>
                   </div>
-                  <button className="bg-yellow-500 text-black font-bold text-[10px] px-3 py-1 rounded-full ml-2">Follow</button>
                 </div>
 
-                <p className="text-xs text-white line-clamp-2">{reels[0].caption}</p>
-
-                <div className="flex items-center gap-2 text-xs text-yellow-400">
-                  <Music className="w-3.5 h-3.5" />
-                  <span>{reels[0].soundTitle}</span>
-                </div>
+                <p className="text-xs text-white line-clamp-2">{activeReel.content}</p>
               </div>
 
               {/* Action Rail */}
-              <div className="flex flex-col items-center gap-5">
-                <button className="flex flex-col items-center gap-1">
+              <div className="flex flex-col items-center gap-5 pointer-events-auto">
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleLike(activeReel.id); }}
+                  className="flex flex-col items-center gap-1"
+                >
                   <div className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center border border-white/20">
-                    <Heart className="w-5 h-5 text-red-500 fill-red-500" />
+                    <Heart className={`w-5 h-5 ${activeReel.isLiked ? 'text-red-500 fill-red-500' : 'text-white'}`} />
                   </div>
-                  <span className="text-[10px] text-white font-bold">{reels[0].likesCount}</span>
+                  <span className="text-[10px] text-white font-bold">{activeReel.likesCount}</span>
                 </button>
 
-                <button className="flex flex-col items-center gap-1">
+                <button
+                  onClick={(e) => { e.stopPropagation(); setActiveCommentsPostId(activeReel.id); }}
+                  className="flex flex-col items-center gap-1"
+                >
                   <div className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center border border-white/20">
                     <MessageSquare className="w-5 h-5 text-white" />
                   </div>
-                  <span className="text-[10px] text-white font-bold">{reels[0].commentsCount}</span>
+                  <span className="text-[10px] text-white font-bold">{activeReel.commentsCount}</span>
                 </button>
 
-                <button onClick={() => setShowGiftModal(reels[0].id)} className="flex flex-col items-center gap-1">
+                <button onClick={(e) => { e.stopPropagation(); setShowGiftModal(activeReel.id); }} className="flex flex-col items-center gap-1">
                   <div className="w-11 h-11 rounded-full bg-yellow-500 text-black flex items-center justify-center font-bold shadow-lg">
                     🪙
                   </div>
@@ -2524,8 +2906,8 @@ export default function App() {
               </div>
             </div>
           </div>
-          )
-        )}
+          );
+        })()}
 
         {/* 3. LIVE STREAMING SCREEN */}
         {activeTab === 'live' && (
@@ -2837,9 +3219,18 @@ export default function App() {
           <div className="p-4 space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-base font-bold text-white">Messages & Calls</h2>
-              <span className="text-xs text-yellow-400 font-bold bg-yellow-500/10 px-2.5 py-1 rounded-full border border-yellow-500/20">
-                {conversations.filter(c => c.partnerName.toLowerCase().includes(chatSearchQuery.toLowerCase())).length} Active
-              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => { setShowNewMessageModal(true); setNewMessageSearchQuery(''); setNewMessageSearchResults([]); }}
+                  className="bg-yellow-500 text-black p-1.5 rounded-full hover:bg-yellow-400 transition"
+                  title="New Message"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                </button>
+                <span className="text-xs text-yellow-400 font-bold bg-yellow-500/10 px-2.5 py-1 rounded-full border border-yellow-500/20">
+                  {conversations.filter(c => c.partnerName.toLowerCase().includes(chatSearchQuery.toLowerCase())).length} Active
+                </span>
+              </div>
             </div>
 
             {/* Real-time Conversation Search Bar */}
@@ -2875,6 +3266,11 @@ export default function App() {
                             setSwipedChatId(null);
                             triggerHaptic([30, 60]);
                             triggerToast(`Deleted thread with ${c.partnerName}`);
+                            if (isSupabaseConfigured() && !c.id.startsWith('local_')) {
+                              supabase.from('conversations').delete().eq('id', c.id).then(({ error }) => {
+                                if (error) console.warn('Conversation delete sync failed:', error.message);
+                              });
+                            }
                           }}
                           className="w-full h-full flex flex-col items-center justify-center text-white font-bold text-xs hover:bg-red-700 transition"
                         >
@@ -3382,7 +3778,7 @@ export default function App() {
                 onClick={() => { setProfileTab('posts'); setActiveCollectionId(null); }}
                 className={`flex-1 py-2 font-bold transition border-b-2 ${profileTab === 'posts' ? 'border-yellow-500 text-yellow-400' : 'border-transparent text-gray-500 hover:text-gray-300'}`}
               >
-                Posts ({posts.filter(p => p.authorHandle === '@jagx_tajudeen').length})
+                Posts ({posts.filter(p => p.authorHandle === currentUser?.handle).length})
               </button>
               <button 
                 onClick={() => { setProfileTab('saved'); setActiveCollectionId(null); }}
@@ -3411,7 +3807,7 @@ export default function App() {
             <div className="space-y-3 pt-1">
               {profileTab === 'posts' && (
                 <>
-                  {posts.filter(p => p.authorHandle === '@jagx_tajudeen').map(post => (
+                  {posts.filter(p => p.authorHandle === currentUser?.handle).map(post => (
                     <div key={post.id} className="bg-[#14161D] border border-[#1F222C] rounded-2xl p-3.5 space-y-2">
                       <div className="flex justify-between items-center">
                         <span className="text-[11px] text-gray-400 font-medium">{post.timestamp}</span>
@@ -3437,7 +3833,7 @@ export default function App() {
                       </div>
                     </div>
                   ))}
-                  {posts.filter(p => p.authorHandle === '@jagx_tajudeen').length === 0 && (
+                  {posts.filter(p => p.authorHandle === currentUser?.handle).length === 0 && (
                     <p className="text-xs text-gray-500 text-center py-8">You haven't published any posts yet.</p>
                   )}
                 </>
@@ -3893,10 +4289,30 @@ export default function App() {
             </div>
             <textarea 
               id="post-text-input"
+              ref={postTextareaRef}
               rows={4} 
               placeholder="What's on your mind? Share updates..." 
               className="w-full bg-[#1F222C] border border-gray-700 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-yellow-500"
             />
+            <button
+              type="button"
+              onClick={() => isRecordingVoiceNote
+                ? stopVoiceNoteRecording()
+                : startVoiceNoteRecording((text) => {
+                    if (postTextareaRef.current) {
+                      postTextareaRef.current.value = (postTextareaRef.current.value ? postTextareaRef.current.value + ' ' : '') + text;
+                    }
+                  })
+              }
+              className={`flex items-center justify-center gap-1.5 w-full text-[10px] font-semibold py-1.5 rounded-xl border transition ${
+                isRecordingVoiceNote
+                  ? 'bg-red-500/20 border-red-500/40 text-red-400 animate-pulse'
+                  : 'bg-purple-500/10 border-purple-500/20 text-purple-400 hover:bg-purple-500/20'
+              }`}
+            >
+              <Mic className="w-3.5 h-3.5" />
+              <span>{isRecordingVoiceNote ? 'Recording... tap to stop' : 'Speak instead of typing (JagX AI)'}</span>
+            </button>
 
             {/* Real device media picker: photo, video, or AI-generated */}
             <div className="space-y-2">
@@ -5637,6 +6053,73 @@ export default function App() {
         </div>
       )}
 
+      {/* NEW MESSAGE MODAL — search real signed-up users, start a chat */}
+      {showNewMessageModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-[#14161D] border-2 border-yellow-500/40 rounded-3xl p-5 max-w-sm w-full space-y-3 animate-in zoom-in-95 duration-150 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[#1F222C] pb-2">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-yellow-400" />
+                <h3 className="text-sm font-black text-white">New Message</h3>
+              </div>
+              <button onClick={() => setShowNewMessageModal(false)}><X className="w-4 h-4 text-gray-400" /></button>
+            </div>
+
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+              <input
+                type="text"
+                value={newMessageSearchQuery}
+                onChange={async (e) => {
+                  const q = e.target.value;
+                  setNewMessageSearchQuery(q);
+                  if (!isSupabaseConfigured() || q.trim().length < 2) {
+                    setNewMessageSearchResults([]);
+                    return;
+                  }
+                  const { data } = await supabase
+                    .from('profiles')
+                    .select('id, display_name, handle, avatar_url')
+                    .or(`display_name.ilike.%${q}%,handle.ilike.%${q}%`)
+                    .neq('id', currentUser?.id || '')
+                    .limit(15);
+                  setNewMessageSearchResults(data || []);
+                }}
+                placeholder="Search by name or @handle..."
+                className="w-full bg-[#1F222C] border border-gray-700 rounded-full pl-9 pr-4 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-yellow-500"
+                autoFocus
+              />
+            </div>
+
+            <div className="space-y-1.5 max-h-64 overflow-y-auto">
+              {!isSupabaseConfigured() && (
+                <p className="text-[11px] text-yellow-400 text-center py-4">Connect Supabase to search and message other users.</p>
+              )}
+              {isSupabaseConfigured() && newMessageSearchQuery.trim().length >= 2 && newMessageSearchResults.length === 0 && (
+                <p className="text-[11px] text-gray-500 text-center py-4">No users found.</p>
+              )}
+              {newMessageSearchResults.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => startConversationWith({
+                    id: p.id,
+                    name: p.display_name,
+                    avatar: p.avatar_url || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
+                  })}
+                  className="w-full flex items-center gap-3 bg-[#1F222C] hover:bg-gray-800 p-2.5 rounded-2xl border border-gray-800 transition text-left"
+                >
+                  <img src={p.avatar_url || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'} className="w-9 h-9 rounded-full object-cover" />
+                  <div>
+                    <p className="text-xs font-bold text-white">{p.display_name}</p>
+                    <p className="text-[10px] text-gray-400">@{p.handle}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {deepSharePostModal && (
         <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
@@ -6557,6 +7040,80 @@ export default function App() {
       )}
 
       {/* BOTTOM NAVIGATION BAR */}
+      {/* AI ASSISTANT FLOATING BUTTON */}
+      <button
+        onClick={() => setShowAiAssistant(true)}
+        className="fixed right-4 z-40 bg-gradient-to-br from-purple-500 to-yellow-500 text-white p-3.5 rounded-full shadow-2xl hover:scale-105 transition"
+        style={{ bottom: 'calc(5.5rem + env(safe-area-inset-bottom))' }}
+        title="JagX AI Assistant"
+      >
+        <Sparkles className="w-5 h-5" />
+      </button>
+
+      {/* AI ASSISTANT CHAT MODAL */}
+      {showAiAssistant && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-end sm:items-center justify-center">
+          <div className="bg-[#14161D] border-t-2 sm:border-2 border-purple-500/40 rounded-t-3xl sm:rounded-3xl p-4 max-w-sm w-full h-[75vh] sm:h-[70vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-[#1F222C] pb-2 mb-2">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-purple-400" />
+                <h3 className="text-sm font-black text-white">JagX AI Assistant</h3>
+              </div>
+              <button onClick={() => setShowAiAssistant(false)}><X className="w-4 h-4 text-gray-400" /></button>
+            </div>
+
+            {!isJagxAIConfigured() && (
+              <p className="text-[11px] text-yellow-400 text-center py-2">⚠️ JagX AI key not set — add VITE_JAGX_AI_API_KEY to your .env.</p>
+            )}
+
+            <div className="flex-1 overflow-y-auto space-y-2 py-2">
+              {aiAssistantMessages.length === 0 && (
+                <p className="text-xs text-gray-500 text-center py-8">Ask JagX AI anything — it can also generate images from the post composer.</p>
+              )}
+              {aiAssistantMessages.map((m, i) => (
+                <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-xs ${m.role === 'user' ? 'bg-yellow-500 text-black' : 'bg-[#1F222C] text-gray-200'}`}>
+                    {m.text}
+                  </div>
+                </div>
+              ))}
+              {isAiAssistantLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-[#1F222C] text-gray-400 rounded-2xl px-3 py-2 text-xs flex items-center gap-1.5">
+                    <Sparkles className="w-3 h-3 animate-spin" /> Thinking...
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 pt-2 border-t border-[#1F222C]">
+              <button
+                onClick={() => isRecordingVoiceNote ? stopVoiceNoteRecording() : startVoiceNoteRecording((text) => setAiAssistantInput(prev => (prev ? prev + ' ' : '') + text))}
+                className={`p-2 rounded-full shrink-0 ${isRecordingVoiceNote ? 'bg-red-500 animate-pulse text-white' : 'bg-[#1F222C] text-gray-400'}`}
+                title="Voice to text"
+              >
+                <Mic className="w-4 h-4" />
+              </button>
+              <input
+                type="text"
+                value={aiAssistantInput}
+                onChange={e => setAiAssistantInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleSendAiAssistantMessage(); }}
+                placeholder="Message JagX AI..."
+                className="flex-1 bg-[#1F222C] border border-gray-700 rounded-full px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+              />
+              <button
+                onClick={handleSendAiAssistantMessage}
+                disabled={isAiAssistantLoading || !aiAssistantInput.trim()}
+                className="bg-purple-500 text-white p-2 rounded-full disabled:opacity-50"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-[#14161D]/95 backdrop-blur-md border-t border-[#1F222C] px-2 py-2 flex items-center justify-around z-40" style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}>
         <button onClick={() => setActiveTab('feed')} className={`flex flex-col items-center gap-1 p-1 ${activeTab === 'feed' ? 'text-yellow-400' : 'text-gray-500'}`}>
           <Home className="w-5 h-5" />
