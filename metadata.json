@@ -1,6 +1,6 @@
 {
-  "name": "JagX Connect",
-  "description": "JagX Connect — Social feed, reels, live rooms, chat, marketplace, member cards, and coin gifts.",
+  "name": "Aural",
+  "description": "Aural — Social feed, reels, live rooms, chat, marketplace, member cards, and coin gifts.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

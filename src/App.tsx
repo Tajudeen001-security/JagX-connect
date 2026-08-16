@@ -47,6 +47,9 @@ import {
   Key,
   Eye,
   EyeOff,
+  AtSign,
+  ChevronRight,
+  Image,
   BarChart3,
   QrCode,
   Paperclip,
@@ -90,6 +93,7 @@ import {
   Vote
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured, saveOfflineCache, loadOfflineCache } from './lib/supabase';
+import { Capacitor } from '@capacitor/core';
 import { jagxGenerateImage, imageResultToDataUrl, isJagxAIConfigured, jagxChat, jagxSpeechToText, playTextToSpeech } from './lib/jagxAI';
 
 // --- DATA TYPES ---
@@ -209,7 +213,7 @@ interface AppNotification {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'feed' | 'reels' | 'live' | 'market' | 'chat' | 'wallet' | 'invest' | 'profile'>('feed');
-  const [accentTheme, setAccentTheme] = useState<'gold' | 'sapphire' | 'emerald' | 'magenta'>('gold');
+  const [accentTheme, setAccentTheme] = useState<'gold' | 'cyan' | 'emerald' | 'purple'>('gold');
   
   // State
   const [userCoins, setUserCoins] = useState(2500);
@@ -248,11 +252,53 @@ export default function App() {
     return loadOfflineCache('user_session', null);
   });
 
+  // Single source of truth for auth state — catches email/password login,
+  // OAuth (Google/X) redirects coming back via the aural:// deep link, token
+  // refreshes, and sign-outs, so the UI never silently falls out of sync
+  // with what Supabase actually thinks is true.
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+
+    const { data: listener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_OUT') {
+        setCurrentUser(null);
+        saveOfflineCache('user_session', null);
+        return;
+      }
+      if (!session?.user) return;
+
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('display_name, handle, avatar_url')
+        .eq('id', session.user.id)
+        .maybeSingle();
+
+      const syncedUser = {
+        id: session.user.id,
+        email: session.user.email || '',
+        name: profile?.display_name || session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || 'User',
+        handle: `@${profile?.handle || session.user.user_metadata?.username || session.user.email?.split('@')[0] || 'user'}`,
+        avatar: profile?.avatar_url || session.user.user_metadata?.avatar_url || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
+      };
+      setCurrentUser(syncedUser);
+      saveOfflineCache('user_session', syncedUser);
+    });
+
+    return () => { listener.subscription.unsubscribe(); };
+  }, []);
+
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [showAuthPassword, setShowAuthPassword] = useState(false);
   const [authName, setAuthName] = useState('');
+  const [authUsername, setAuthUsername] = useState('');
+  const [showVerifyCodeModal, setShowVerifyCodeModal] = useState(false);
+  const [pendingVerifyEmail, setPendingVerifyEmail] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [isVerifyingCode, setIsVerifyingCode] = useState(false);
+  const [verifyCodeError, setVerifyCodeError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [showSupabaseConfigInfo, setShowSupabaseConfigInfo] = useState(false);
@@ -502,7 +548,7 @@ export default function App() {
       category: 'AI & Blockchain Developer',
       distance: '0.6 km away',
       avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80',
-      desc: 'Building decentralized social infrastructure & JagX Connect modules in Victoria Island.',
+      desc: 'Building decentralized social infrastructure & Aural modules in Victoria Island.',
       lat: 42,
       lng: 35
     },
@@ -529,7 +575,7 @@ export default function App() {
       distance: '2.4 km away',
       avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=150&q=80',
       attendees: 420,
-      desc: 'Exclusive VIP listening experience with live streaming on JagX Connect Rooms.',
+      desc: 'Exclusive VIP listening experience with live streaming on Aural Rooms.',
       lat: 70,
       lng: 50
     },
@@ -554,6 +600,31 @@ export default function App() {
     return `${mins} min read`;
   };
 
+  // Renders post text with #hashtags styled and tappable — tapping one
+  // filters the feed to that tag, same as tapping a chip up top.
+  const renderContentWithHashtags = (text: string) => {
+    const parts = text.split(/(#[a-zA-Z0-9_]+)/g);
+    return parts.map((part, i) => {
+      if (/^#[a-zA-Z0-9_]+$/.test(part)) {
+        return (
+          <span
+            key={i}
+            onClick={(e) => {
+              e.stopPropagation();
+              setActiveHashtagFilter(part);
+              setActiveTab('feed');
+              triggerHaptic(20);
+            }}
+            className="text-yellow-400 font-semibold cursor-pointer hover:underline"
+          >
+            {part}
+          </span>
+        );
+      }
+      return <React.Fragment key={i}>{part}</React.Fragment>;
+    });
+  };
+
   // User VIP Badges
   const [userBadges, setUserBadges] = useState<string[]>(['Diamond Ambassador', 'Black VIP', 'Verified Creator', 'Top Supporter']);
 
@@ -570,11 +641,21 @@ export default function App() {
   const handleGoogleAuth = async () => {
     setAuthLoading(true);
     if (isSupabaseConfigured()) {
-      const { error } = await supabase.auth.signInWithOAuth({
+      const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo: window.location.origin },
+        options: {
+          redirectTo: Capacitor.isNativePlatform() ? 'aural://login-callback' : window.location.origin,
+          skipBrowserRedirect: Capacitor.isNativePlatform(),
+        },
       });
-      if (error) setAuthError(error.message);
+      if (error) {
+        setAuthError(error.message);
+        setAuthLoading(false);
+      } else if (Capacitor.isNativePlatform() && data?.url) {
+        const { Browser } = await import('@capacitor/browser');
+        await Browser.open({ url: data.url });
+        setAuthLoading(false);
+      }
     } else {
       setTimeout(() => {
         const googleUser = {
@@ -597,11 +678,19 @@ export default function App() {
   const handleXAuth = async () => {
     setAuthLoading(true);
     if (isSupabaseConfigured()) {
-      const { error } = await supabase.auth.signInWithOAuth({
+      const redirectTo = Capacitor.isNativePlatform() ? 'aural://login-callback' : window.location.origin;
+      const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'twitter',
-        options: { redirectTo: window.location.origin },
+        options: { redirectTo, skipBrowserRedirect: Capacitor.isNativePlatform() },
       });
-      if (error) setAuthError(error.message);
+      if (error) {
+        setAuthError(error.message);
+        setAuthLoading(false);
+      } else if (Capacitor.isNativePlatform() && data?.url) {
+        const { Browser } = await import('@capacitor/browser');
+        await Browser.open({ url: data.url });
+        setAuthLoading(false);
+      }
     } else {
       setTimeout(() => {
         const xUser = {
@@ -698,7 +787,7 @@ export default function App() {
     setTimeout(() => {
       setIsLoadingData(false);
       setIsRefreshing(false);
-      triggerToast('✨ Feed updated with latest Supabase posts!');
+      triggerToast('✨ Feed updated!');
     }, 900);
   };
   
@@ -782,8 +871,12 @@ export default function App() {
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!authEmail || !authPassword || !authName) {
-      setAuthError('Please fill in all fields.');
+    if (!authEmail || !authPassword || !authName || !authUsername) {
+      setAuthError('Please fill in all fields, including a username.');
+      return;
+    }
+    if (!/^[a-z0-9_]{3,20}$/.test(authUsername)) {
+      setAuthError('Username must be 3-20 characters: lowercase letters, numbers, underscores only.');
       return;
     }
     setAuthLoading(true);
@@ -797,6 +890,7 @@ export default function App() {
           options: {
             data: {
               full_name: authName,
+              username: authUsername,
             }
           }
         });
@@ -806,25 +900,32 @@ export default function App() {
           return;
         }
 
-        if (data.user) {
+        if (data.session && data.user) {
+          // Email confirmation is off in this Supabase project — log straight in
           const newUser = {
             id: data.user.id,
             email: data.user.email || authEmail,
             name: authName,
-            handle: `@${authName.toLowerCase().replace(/\s+/g, '_')}`,
+            handle: `@${authUsername}`,
             avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
           };
           setCurrentUser(newUser);
           saveOfflineCache('user_session', newUser);
           setShowAuthModal(false);
           triggerToast(`Account created! Welcome, ${newUser.name}`);
+        } else if (data.user) {
+          // Email confirmation is on — send them to enter the 6-digit code
+          setPendingVerifyEmail(authEmail);
+          setShowAuthModal(false);
+          setShowVerifyCodeModal(true);
+          triggerToast(`📧 We sent a 6-digit code to ${authEmail}`);
         }
       } else {
         const newUser = {
           id: `usr_${Date.now()}`,
           email: authEmail,
           name: authName,
-          handle: `@${authName.toLowerCase().replace(/\s+/g, '_')}`,
+          handle: `@${authUsername}`,
           avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
         };
         setCurrentUser(newUser);
@@ -839,6 +940,57 @@ export default function App() {
     }
   };
 
+  const handleVerifyCode = async () => {
+    if (!verificationCode.trim() || verificationCode.trim().length !== 6) {
+      setVerifyCodeError('Enter the 6-digit code from your email.');
+      return;
+    }
+    setIsVerifyingCode(true);
+    setVerifyCodeError(null);
+    try {
+      const { data, error } = await supabase.auth.verifyOtp({
+        email: pendingVerifyEmail,
+        token: verificationCode.trim(),
+        type: 'signup'
+      });
+      if (error) {
+        setVerifyCodeError(error.message);
+        return;
+      }
+      if (data.user) {
+        const newUser = {
+          id: data.user.id,
+          email: data.user.email || pendingVerifyEmail,
+          name: data.user.user_metadata?.full_name || pendingVerifyEmail.split('@')[0],
+          handle: `@${data.user.user_metadata?.username || pendingVerifyEmail.split('@')[0]}`,
+          avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
+        };
+        setCurrentUser(newUser);
+        saveOfflineCache('user_session', newUser);
+        setShowVerifyCodeModal(false);
+        setVerificationCode('');
+        triggerToast(`✅ Verified! Welcome, ${newUser.name}`);
+      }
+    } catch (err) {
+      setVerifyCodeError(err instanceof Error ? err.message : 'Verification failed — try again.');
+    } finally {
+      setIsVerifyingCode(false);
+    }
+  };
+
+  const handleResendCode = async () => {
+    try {
+      const { error } = await supabase.auth.resend({ type: 'signup', email: pendingVerifyEmail });
+      if (error) {
+        setVerifyCodeError(error.message);
+      } else {
+        triggerToast(`📧 New code sent to ${pendingVerifyEmail}`);
+      }
+    } catch (err) {
+      setVerifyCodeError(err instanceof Error ? err.message : 'Could not resend code.');
+    }
+  };
+
   const handleSignOut = async () => {
     if (isSupabaseConfigured()) {
       await supabase.auth.signOut();
@@ -849,12 +1001,16 @@ export default function App() {
   };
 
   // Accent Colors
-  const accentColors = {
+  const accentColorMap = {
     gold: { primary: 'bg-yellow-500 text-black', border: 'border-yellow-500', text: 'text-yellow-400', ring: 'focus:ring-yellow-500' },
-    sapphire: { primary: 'bg-blue-600 text-white', border: 'border-blue-500', text: 'text-blue-400', ring: 'focus:ring-blue-500' },
+    cyan: { primary: 'bg-cyan-500 text-black', border: 'border-cyan-500', text: 'text-cyan-400', ring: 'focus:ring-cyan-500' },
     emerald: { primary: 'bg-emerald-500 text-black', border: 'border-emerald-500', text: 'text-emerald-400', ring: 'focus:ring-emerald-500' },
-    magenta: { primary: 'bg-pink-600 text-white', border: 'border-pink-500', text: 'text-pink-400', ring: 'focus:ring-pink-500' },
-  }[accentTheme];
+    purple: { primary: 'bg-purple-600 text-white', border: 'border-purple-500', text: 'text-purple-400', ring: 'focus:ring-purple-500' },
+  };
+  // Falls back to gold if accentTheme somehow doesn't match a known key —
+  // this is exactly what caused the app to go blank when a theme was
+  // selected that didn't exist in this map.
+  const accentColors = accentColorMap[accentTheme as keyof typeof accentColorMap] || accentColorMap.gold;
 
   // Feed Posts
   const [posts, setPosts] = useState<Post[]>([]);
@@ -944,7 +1100,7 @@ export default function App() {
         auto_destroy_duration: autoDestroySeconds > 0 ? autoDestroySeconds : null
       }]);
       if (error) {
-        triggerToast(`⚠️ Sent locally only: ${error.message}`);
+        console.warn('Message sync failed:', error.message);
       } else {
         await supabase.from('conversations').update({
           last_message: sentText || '📷 Photo',
@@ -966,7 +1122,7 @@ export default function App() {
   // existing one if it already exists), then switch to it.
   const startConversationWith = async (partner: { id: string; name: string; avatar: string }) => {
     if (!isSupabaseConfigured() || !currentUser?.id) {
-      triggerToast('⚠️ Sign in and connect Supabase to message other users.');
+      triggerToast('⚠️ Sign in to message other users.');
       return;
     }
     const [userA, userB] = [currentUser.id, partner.id].sort();
@@ -985,7 +1141,7 @@ export default function App() {
         .select()
         .single();
       if (error || !created) {
-        triggerToast(`⚠️ Couldn't start chat: ${error?.message}`);
+        console.warn('Could not start chat:', error?.message);
         return;
       }
       convId = created.id;
@@ -1295,14 +1451,14 @@ export default function App() {
       setPosts(posts.filter(p => p.id !== confirmDeleteModal.id));
       if (isSupabaseConfigured() && !confirmDeleteModal.id.startsWith('p_')) {
         const { error } = await supabase.from('posts').delete().eq('id', confirmDeleteModal.id);
-        if (error) triggerToast(`⚠️ Deleted locally only: ${error.message}`);
+        if (error) console.warn('Delete sync failed:', error.message);
       }
       triggerToast('Post deleted successfully.');
     } else if (confirmDeleteModal.type === 'product') {
       setProducts(products.filter(p => p.id !== confirmDeleteModal.id));
       if (isSupabaseConfigured() && !confirmDeleteModal.id.startsWith('prod_')) {
         const { error } = await supabase.from('products').delete().eq('id', confirmDeleteModal.id);
-        if (error) triggerToast(`⚠️ Deleted locally only: ${error.message}`);
+        if (error) console.warn('Delete sync failed:', error.message);
       }
       triggerToast('Marketplace listing removed.');
     }
@@ -1579,7 +1735,7 @@ export default function App() {
             if (payload.eventType === 'INSERT' && payload.new) {
               const newPost = payload.new as Post;
               setPosts((prev) => [newPost, ...prev]);
-              triggerToast('⚡ New post received via Supabase Realtime!');
+              triggerToast('⚡ New post received!');
             }
           }
         )
@@ -1611,7 +1767,7 @@ export default function App() {
   const handleSendAiAssistantMessage = async () => {
     if (!aiAssistantInput.trim()) return;
     if (!isJagxAIConfigured()) {
-      triggerToast('⚠️ JagX AI key not set — add VITE_JAGX_AI_API_KEY to your .env.');
+      console.warn('JagX AI key not configured.');
       return;
     }
     const userText = aiAssistantInput.trim();
@@ -1632,7 +1788,7 @@ export default function App() {
   // drop the text straight into whichever composer called it.
   const startVoiceNoteRecording = async (onTranscribed: (text: string) => void) => {
     if (!isJagxAIConfigured()) {
-      triggerToast('⚠️ JagX AI key not set — voice-to-text needs VITE_JAGX_AI_API_KEY.');
+      console.warn('JagX AI key not configured (voice-to-text).');
       return;
     }
     try {
@@ -1649,7 +1805,7 @@ export default function App() {
           const result = await jagxSpeechToText(blob);
           onTranscribed(result.text);
         } catch (err) {
-          triggerToast(`⚠️ Transcription failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+          console.warn('Transcription failed:', err);
         }
       };
       recorder.start();
@@ -1666,7 +1822,7 @@ export default function App() {
 
   const handleReadPostAloud = async (postId: string, content: string) => {
     if (!isJagxAIConfigured()) {
-      triggerToast('⚠️ JagX AI key not set — read-aloud needs VITE_JAGX_AI_API_KEY.');
+      console.warn('JagX AI key not configured (read-aloud).');
       return;
     }
     if (!content.trim()) return;
@@ -1674,7 +1830,7 @@ export default function App() {
     try {
       await playTextToSpeech(content.slice(0, 1000));
     } catch (err) {
-      triggerToast(`⚠️ Couldn't read this aloud: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      console.warn('Read-aloud failed:', err);
     } finally {
       setIsReadingPostAloud(null);
     }
@@ -1703,6 +1859,9 @@ export default function App() {
 
     // If the user picked a real file from their device, upload it to Supabase
     // Storage so it gets a stable public URL instead of a giant data: URL.
+    // If this specific upload step fails, the post still goes through with
+    // the locally-captured preview as a fallback — a media hiccup should
+    // never silently swallow the whole post.
     if (isSupabaseConfigured() && selectedPostMediaFile && currentUser?.id) {
       const ext = selectedPostMediaFile.name.split('.').pop() || 'bin';
       const path = `${currentUser.id}/${Date.now()}.${ext}`;
@@ -1711,17 +1870,18 @@ export default function App() {
         .upload(path, selectedPostMediaFile, { upsert: false });
 
       if (uploadError) {
-        triggerToast(`⚠️ Media upload failed: ${uploadError.message}`);
-        setIsPublishingPost(false);
-        return;
-      }
-      const { data: publicUrlData } = supabase.storage.from('post-media').getPublicUrl(path);
-      if (selectedPostMediaFile.type.startsWith('video/')) {
-        finalVideoUrl = publicUrlData.publicUrl;
-        finalImageUrl = undefined;
+        console.warn('Media upload to storage failed, falling back to inline preview:', uploadError.message);
+        // finalImageUrl / finalVideoUrl already hold the local preview from
+        // when the file was picked — leave them as-is and keep going.
       } else {
-        finalImageUrl = publicUrlData.publicUrl;
-        finalVideoUrl = undefined;
+        const { data: publicUrlData } = supabase.storage.from('post-media').getPublicUrl(path);
+        if (selectedPostMediaFile.type.startsWith('video/')) {
+          finalVideoUrl = publicUrlData.publicUrl;
+          finalImageUrl = undefined;
+        } else {
+          finalImageUrl = publicUrlData.publicUrl;
+          finalVideoUrl = undefined;
+        }
       }
     }
 
@@ -1757,7 +1917,7 @@ export default function App() {
         video_url: finalVideoUrl || null
       }]);
       if (error) {
-        triggerToast(`⚠️ Post saved locally only — Supabase insert failed: ${error.message}`);
+        console.warn('Post sync failed:', error.message);
       }
     }
 
@@ -1770,6 +1930,7 @@ export default function App() {
     setIsPublishingPost(false);
     triggerToast('Post published successfully!');
   };
+
 
   // Live-load posts from Supabase and keep them updated in real time across
   // every device — this is what makes posting actually "real time" instead
@@ -1856,7 +2017,7 @@ export default function App() {
         .from('post-media')
         .upload(path, newProductImageFile, { upsert: false });
       if (uploadError) {
-        triggerToast(`⚠️ Photo upload failed: ${uploadError.message}`);
+        console.warn('Photo upload failed:', uploadError.message);
         setIsPublishingProduct(false);
         return;
       }
@@ -1887,7 +2048,7 @@ export default function App() {
         category: newProd.category,
         image_url: finalImageUrl
       }]);
-      if (error) triggerToast(`⚠️ Listed locally only — Supabase insert failed: ${error.message}`);
+      if (error) console.warn('Listing sync failed:', error.message);
     }
 
     setProducts(prev => [newProd, ...prev]);
@@ -1957,6 +2118,9 @@ export default function App() {
   // synced there any time it changes locally (gifting, staking, etc.),
   // and pick up changes made from another device live.
   const [walletLoaded, setWalletLoaded] = useState(false);
+  const [followerCount, setFollowerCount] = useState(0);
+  const [followingCount, setFollowingCount] = useState(0);
+  const [followingIds, setFollowingIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!isSupabaseConfigured() || !currentUser?.id) {
@@ -1989,6 +2153,51 @@ export default function App() {
     }, 800); // debounce so rapid gifting doesn't spam writes
     return () => clearTimeout(t);
   }, [userCoins, currentUser?.id, walletLoaded]);
+
+  // Real follower/following counts, kept live
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !currentUser?.id) return;
+    let cancelled = false;
+
+    const load = async () => {
+      const [{ count: followers }, { count: followingC }, { data: followingRows }] = await Promise.all([
+        supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', currentUser.id),
+        supabase.from('follows').select('*', { count: 'exact', head: true }).eq('follower_id', currentUser.id),
+        supabase.from('follows').select('following_id').eq('follower_id', currentUser.id)
+      ]);
+      if (cancelled) return;
+      setFollowerCount(followers || 0);
+      setFollowingCount(followingC || 0);
+      setFollowingIds(new Set((followingRows || []).map((r: any) => r.following_id)));
+    };
+    load();
+
+    const channel = supabase
+      .channel(`follows-${currentUser.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'follows' }, () => load())
+      .subscribe();
+
+    return () => { cancelled = true; supabase.removeChannel(channel); };
+  }, [currentUser?.id]);
+
+  const toggleFollow = async (targetUserId: string) => {
+    if (!currentUser?.id) {
+      setAuthMode('signup');
+      setShowAuthModal(true);
+      return;
+    }
+    const isFollowing = followingIds.has(targetUserId);
+    if (isFollowing) {
+      setFollowingIds(prev => { const next = new Set(prev); next.delete(targetUserId); return next; });
+      setFollowingCount(c => Math.max(0, c - 1));
+      await supabase.from('follows').delete().eq('follower_id', currentUser.id).eq('following_id', targetUserId);
+    } else {
+      setFollowingIds(prev => new Set(prev).add(targetUserId));
+      setFollowingCount(c => c + 1);
+      const { error } = await supabase.from('follows').insert([{ follower_id: currentUser.id, following_id: targetUserId }]);
+      if (error) console.warn('Follow action failed:', error.message);
+    }
+  };
 
   // Real live sports scores from TheSportsDB (free tier, key "3" is their
   // public test key — for higher limits, get your own free key at
@@ -2163,21 +2372,7 @@ export default function App() {
       {/* TOP HEADER BAR */}
       <header className="sticky top-0 z-40 bg-[#14161D]/90 backdrop-blur-md px-3 py-2.5 border-b border-[#1F222C] flex items-center justify-between" style={{ paddingTop: 'calc(0.625rem + env(safe-area-inset-top))' }}>
         <div className="flex items-center gap-2">
-          <span className={`text-lg font-black tracking-tight ${accentColors.text}`}>JagX Connect</span>
-          
-          {/* Connection Status Pill */}
-          <button 
-            onClick={() => setShowSupabaseConfigInfo(true)}
-            className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border transition ${
-              isSupabaseConfigured() 
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
-                : 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'
-            }`}
-            title="Connection status"
-          >
-            {isSupabaseConfigured() ? <Wifi className="w-3 h-3" /> : <Database className="w-3 h-3" />}
-            <span className="hidden sm:inline">{isSupabaseConfigured() ? 'Connected' : 'Offline Mode'}</span>
-          </button>
+          <span className={`text-lg font-black tracking-tight ${accentColors.text}`}>Aural</span>
         </div>
 
         <div className="flex items-center gap-2">
@@ -2478,6 +2673,10 @@ export default function App() {
                            p.authorHandle.toLowerCase().includes(q) ||
                            p.id.toLowerCase() === q;
                   })
+                  .filter(p => {
+                    if (!activeHashtagFilter || activeHashtagFilter === '#All') return true;
+                    return p.content.toLowerCase().includes(activeHashtagFilter.toLowerCase());
+                  })
                   .map(post => (
                   <div 
                     key={post.id} 
@@ -2554,7 +2753,7 @@ export default function App() {
                       const displayContent = (!isLong || isExpanded) ? post.content : `${post.content.slice(0, 120)}...`;
                       return (
                         <div className="space-y-1">
-                          <p className="text-xs leading-relaxed text-gray-200">{displayContent}</p>
+                          <p className="text-xs leading-relaxed text-gray-200">{renderContentWithHashtags(displayContent)}</p>
                           {isLong && (
                             <button 
                               onClick={() => setExpandedPostIds(prev => ({ ...prev, [post.id]: !isExpanded }))}
@@ -2578,7 +2777,7 @@ export default function App() {
                               ...prev,
                               [post.id]: {
                                 translatedText: post.language === 'fr' 
-                                  ? 'Hello everyone! We are very excited to present the new version of JagX Connect. The Web3 network is incredible! 🚀✨ #Tech #Web3'
+                                  ? 'Hello everyone! We are very excited to present the new version of Aural. The Web3 network is incredible! 🚀✨ #Tech #Web3'
                                   : `Translated (${post.language || 'Detected'} → English): "${post.content}"`,
                                 sourceLang: post.language === 'fr' ? 'French' : 'Native Dialect',
                                 isTranslating: false
@@ -2766,9 +2965,8 @@ export default function App() {
                           if (navigator.share) {
                             try {
                               await navigator.share({
-                                title: `JagX Post by ${post.authorName}`,
-                                text: post.content,
-                                url: `https://jri.network/app#post=${post.id}`
+                                title: `Aural post by ${post.authorName}`,
+                                text: `${post.content}\n\nOpen in the Aural app: aural://post/${post.id}`
                               });
                               triggerToast('🚀 Post shared successfully!');
                             } catch (e) {
@@ -3719,7 +3917,7 @@ export default function App() {
                   onClick={() => setShowTipModal({ userName: currentUser?.name || "Tajudeen Gbadamosi", handle: currentUser?.handle || "@jagx_tajudeen", avatar: currentUser?.avatar || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80" })}
                   className="bg-blue-500/10 border border-blue-500/30 text-blue-400 text-[10px] font-bold px-3 py-1 rounded-full flex items-center gap-1 hover:bg-blue-500/20 transition"
                 >
-                  <CoinIcon className="w-3.5 h-3.5" />
+                  <Coins className="w-3.5 h-3.5" />
                   <span>Tip Jar</span>
                 </button>
 
@@ -3754,16 +3952,16 @@ export default function App() {
                 )}
               </div>
 
-              <p className="text-xs text-gray-300 max-w-xs pt-1">Entrepreneur & Tech Creator. Building the future with JagX Connect & JRI.</p>
+              <p className="text-xs text-gray-300 max-w-xs pt-1">Entrepreneur & Tech Creator. Building the future with Aural & JRI.</p>
             </div>
 
             <div className="flex justify-around bg-[#14161D] border border-[#1F222C] py-3 rounded-2xl text-center">
               <div>
-                <p className="text-sm font-bold text-white">14.2K</p>
+                <p className="text-sm font-bold text-white">{followerCount.toLocaleString()}</p>
                 <p className="text-[10px] text-gray-400">Followers</p>
               </div>
               <div>
-                <p className="text-sm font-bold text-white">380</p>
+                <p className="text-sm font-bold text-white">{followingCount.toLocaleString()}</p>
                 <p className="text-[10px] text-gray-400">Following</p>
               </div>
               <div>
@@ -4318,7 +4516,7 @@ export default function App() {
             <div className="space-y-2">
               <div className="grid grid-cols-3 gap-2">
                 <label className="flex flex-col items-center gap-1 text-[10px] text-yellow-400 font-semibold bg-yellow-500/10 py-2 rounded-xl border border-yellow-500/20 hover:bg-yellow-500/20 cursor-pointer">
-                  <ImageIcon className="w-4 h-4" />
+                  <Image className="w-4 h-4" />
                   <span>Photo</span>
                   <input
                     type="file"
@@ -4448,6 +4646,25 @@ export default function App() {
                 </div>
               )}
 
+              {authMode === 'signup' && (
+                <div className="space-y-1">
+                  <label className="text-[11px] text-gray-400 font-bold">Username</label>
+                  <div className="relative">
+                    <AtSign className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                    <input 
+                      type="text" 
+                      required
+                      value={authUsername}
+                      onChange={e => setAuthUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                      placeholder="e.g. jagx_tajudeen"
+                      maxLength={20}
+                      className="w-full bg-[#1F222C] border border-gray-700 rounded-xl pl-9 pr-3 py-2 text-xs text-white focus:outline-none focus:border-yellow-500"
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-500">This is your @handle — lowercase letters, numbers, underscores only.</p>
+                </div>
+              )}
+
               <div className="space-y-1">
                 <label className="text-[11px] text-gray-400 font-bold">Email Address</label>
                 <div className="relative">
@@ -4468,13 +4685,21 @@ export default function App() {
                 <div className="relative">
                   <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
                   <input 
-                    type="password" 
+                    type={showAuthPassword ? 'text' : 'password'}
                     required
                     value={authPassword}
                     onChange={e => setAuthPassword(e.target.value)}
                     placeholder="••••••••"
-                    className="w-full bg-[#1F222C] border border-gray-700 rounded-xl pl-9 pr-3 py-2 text-xs text-white focus:outline-none focus:border-yellow-500"
+                    className="w-full bg-[#1F222C] border border-gray-700 rounded-xl pl-9 pr-9 py-2 text-xs text-white focus:outline-none focus:border-yellow-500"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowAuthPassword(v => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                    tabIndex={-1}
+                  >
+                    {showAuthPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
 
@@ -4540,47 +4765,55 @@ export default function App() {
         </div>
       )}
 
-      {/* CONNECTION INFO MODAL */}
-      {showSupabaseConfigInfo && (
+      {/* EMAIL VERIFICATION — 6-DIGIT CODE MODAL */}
+      {showVerifyCodeModal && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-[#14161D] border border-emerald-500/30 rounded-3xl p-5 max-w-sm w-full space-y-3 animate-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
-                <Wifi className="w-4 h-4" />
-                <span>Connection Status</span>
-              </div>
-              <button onClick={() => setShowSupabaseConfigInfo(false)}>
-                <X className="w-4 h-4 text-gray-400 hover:text-white" />
+          <div className="bg-[#14161D] border border-yellow-500/50 rounded-3xl p-6 max-w-xs w-full space-y-4 text-center animate-in zoom-in-95 duration-150 shadow-2xl">
+            <div className="w-12 h-12 rounded-full bg-yellow-500/10 text-yellow-400 mx-auto flex items-center justify-center border border-yellow-500/30">
+              <Mail className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold text-white">Check your email</h3>
+              <p className="text-xs text-gray-400">Enter the 6-digit code we sent to<br /><span className="text-yellow-400 font-semibold">{pendingVerifyEmail}</span></p>
+            </div>
+
+            <input 
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              value={verificationCode}
+              onChange={e => setVerificationCode(e.target.value.replace(/\D/g, ''))}
+              onKeyDown={e => { if (e.key === 'Enter') handleVerifyCode(); }}
+              placeholder="••••••"
+              autoFocus
+              className="w-44 mx-auto bg-[#1F222C] border-2 border-yellow-500 rounded-2xl py-2.5 text-center text-lg tracking-[0.5em] font-mono text-yellow-400 font-black focus:outline-none"
+            />
+
+            {verifyCodeError && (
+              <p className="text-[11px] text-red-400">{verifyCodeError}</p>
+            )}
+
+            <button
+              disabled={isVerifyingCode || verificationCode.length !== 6}
+              onClick={handleVerifyCode}
+              className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold text-xs py-2.5 rounded-xl transition disabled:opacity-50"
+            >
+              {isVerifyingCode ? 'Verifying...' : 'Verify & Continue'}
+            </button>
+
+            <div className="flex items-center justify-between text-[11px]">
+              <button onClick={handleResendCode} className="text-yellow-400 font-semibold underline">
+                Resend code
+              </button>
+              <button onClick={() => { setShowVerifyCodeModal(false); setVerificationCode(''); setVerifyCodeError(null); }} className="text-gray-500">
+                Cancel
               </button>
             </div>
-
-            <div className="space-y-2 text-xs text-gray-300">
-              <p className="leading-relaxed">
-                {isSupabaseConfigured()
-                  ? <>You're <strong className="text-emerald-400">connected</strong>. Posts, chat, and your profile sync live across devices.</>
-                  : <>You're in <strong className="text-yellow-400">offline mode</strong> — everything still works, but it's saved only on this device.</>
-                }
-              </p>
-
-              <div className="bg-[#1F222C] p-2.5 rounded-xl border border-gray-800 space-y-1">
-                <p className="font-bold text-white flex items-center gap-1">
-                  <Wifi className="w-3.5 h-3.5 text-emerald-400" /> Offline Caching
-                </p>
-                <p className="text-[11px] text-gray-400 leading-normal">
-                  If your connection drops, JagX Connect automatically saves your posts, messages, and session locally so nothing is lost.
-                </p>
-              </div>
-            </div>
-
-            <button 
-              onClick={() => setShowSupabaseConfigInfo(false)}
-              className="w-full bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs py-2 rounded-xl transition"
-            >
-              Got it
-            </button>
           </div>
         </div>
       )}
+
 
       {/* ACTIVE CHAT / DM OVERLAY */}
       {activeChat && (
@@ -4918,7 +5151,7 @@ export default function App() {
             </div>
 
             <p className="text-[11px] text-gray-400 leading-relaxed bg-[#1F222C] p-3 rounded-xl border border-gray-800">
-              📈 Your post is performing <strong className="text-yellow-400">45% better</strong> than average community posts on JagX Connect!
+              📈 Your post is performing <strong className="text-yellow-400">45% better</strong> than average community posts on Aural!
             </p>
           </div>
         </div>
@@ -5058,8 +5291,8 @@ export default function App() {
             <div className="flex gap-2">
               <button 
                 onClick={() => {
-                  navigator.clipboard.writeText(`https://jri.network/user/${currentUser?.handle || 'jagx_tajudeen'}`);
-                  triggerToast('📋 Profile link copied to clipboard!');
+                  navigator.clipboard.writeText(`aural://user/${currentUser?.handle || 'jagx_tajudeen'}`);
+                  triggerToast('📋 In-app profile link copied!');
                 }}
                 className="flex-1 bg-yellow-500 text-black font-bold text-xs py-2 rounded-xl flex items-center justify-center gap-1"
               >
@@ -5370,24 +5603,11 @@ export default function App() {
                   <span className="text-[10px] text-gray-500">{blockedUsers.length}</span>
                 </button>
 
-                <button 
-                  onClick={() => {
-                    setShowSettings(false);
-                    setShowSupabaseConfigInfo(true);
-                  }}
-                  className="w-full bg-[#1F222C] text-gray-300 font-bold py-2 rounded-xl flex items-center justify-between px-3 border border-gray-800"
-                >
-                  <span className="flex items-center gap-2">
-                    <Wifi className="w-4 h-4 text-emerald-400" />
-                    <span>Sync & Connection</span>
-                  </span>
-                  <span className="text-[10px] text-emerald-400">{isSupabaseConfigured() ? 'Connected' : 'Offline'}</span>
-                </button>
               </div>
             </div>
 
             <div className="pt-2 border-t border-[#1F222C] text-center text-[11px] text-gray-500">
-              JagX Connect v1.0 • Built by JRI
+              Aural v1.0 • Built by JRI
             </div>
           </div>
         </div>
@@ -5953,7 +6173,7 @@ export default function App() {
                   setShowAiImageStudioModal(false);
                 } catch (err) {
                   console.error('JagX AI image generation failed:', err);
-                  triggerToast(`⚠️ AI image generation failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+                  console.warn('AI image generation failed:', err);
                 } finally {
                   setIsGeneratingAiImage(false);
                 }
@@ -5969,11 +6189,6 @@ export default function App() {
                 <span>Generate & Attach to Post 🎨</span>
               )}
             </button>
-            {!isJagxAIConfigured() && (
-              <p className="text-[10px] text-yellow-400 text-center">
-                ⚠️ JagX AI key not set — add VITE_JAGX_AI_API_KEY to your .env to enable this.
-              </p>
-            )}
           </div>
         </div>
       )}
@@ -6022,7 +6237,7 @@ export default function App() {
             </div>
 
             <label className="flex flex-col items-center gap-1 text-[10px] text-yellow-400 font-semibold bg-yellow-500/10 py-3 rounded-xl border border-yellow-500/20 hover:bg-yellow-500/20 cursor-pointer">
-              <ImageIcon className="w-4 h-4" />
+              <Image className="w-4 h-4" />
               <span>{newProductImagePreview ? 'Change Photo' : 'Add Photo'}</span>
               <input
                 type="file"
@@ -6093,27 +6308,41 @@ export default function App() {
 
             <div className="space-y-1.5 max-h-64 overflow-y-auto">
               {!isSupabaseConfigured() && (
-                <p className="text-[11px] text-yellow-400 text-center py-4">Connect Supabase to search and message other users.</p>
+                <p className="text-[11px] text-yellow-400 text-center py-4">Sign in to search and message other users.</p>
               )}
               {isSupabaseConfigured() && newMessageSearchQuery.trim().length >= 2 && newMessageSearchResults.length === 0 && (
                 <p className="text-[11px] text-gray-500 text-center py-4">No users found.</p>
               )}
               {newMessageSearchResults.map(p => (
-                <button
+                <div
                   key={p.id}
-                  onClick={() => startConversationWith({
-                    id: p.id,
-                    name: p.display_name,
-                    avatar: p.avatar_url || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
-                  })}
                   className="w-full flex items-center gap-3 bg-[#1F222C] hover:bg-gray-800 p-2.5 rounded-2xl border border-gray-800 transition text-left"
                 >
-                  <img src={p.avatar_url || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'} className="w-9 h-9 rounded-full object-cover" />
-                  <div>
-                    <p className="text-xs font-bold text-white">{p.display_name}</p>
-                    <p className="text-[10px] text-gray-400">@{p.handle}</p>
-                  </div>
-                </button>
+                  <button
+                    onClick={() => startConversationWith({
+                      id: p.id,
+                      name: p.display_name,
+                      avatar: p.avatar_url || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'
+                    })}
+                    className="flex items-center gap-3 flex-1 text-left"
+                  >
+                    <img src={p.avatar_url || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80'} className="w-9 h-9 rounded-full object-cover" />
+                    <div>
+                      <p className="text-xs font-bold text-white">{p.display_name}</p>
+                      <p className="text-[10px] text-gray-400">@{p.handle}</p>
+                    </div>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleFollow(p.id); }}
+                    className={`text-[10px] font-bold px-3 py-1.5 rounded-full shrink-0 transition ${
+                      followingIds.has(p.id)
+                        ? 'bg-[#0B0C10] text-gray-400 border border-gray-700'
+                        : 'bg-yellow-500 text-black'
+                    }`}
+                  >
+                    {followingIds.has(p.id) ? 'Following' : 'Follow'}
+                  </button>
+                </div>
               ))}
             </div>
           </div>
@@ -6192,23 +6421,18 @@ export default function App() {
               </div>
             </div>
 
-            {/* Deep Links Schema Details */}
+            {/* Deep Link Details — app-only, does nothing without Aural installed */}
             <div className="bg-[#1F222C] p-3 rounded-2xl border border-gray-800 space-y-2 text-xs">
               <div className="flex items-center justify-between text-[10px] text-gray-400 font-bold uppercase">
-                <span>Capacitor Native Deep Link</span>
-                <span className="text-yellow-400 font-mono">jagx://</span>
+                <span>In-App Link (Aural only)</span>
+                <span className="text-yellow-400 font-mono">aural://</span>
               </div>
               <div className="bg-black/60 p-2 rounded-xl text-yellow-400 font-mono text-[11px] break-all border border-gray-800">
-                jagx://post/{deepSharePostModal.id}
+                aural://post/{deepSharePostModal.id}
               </div>
-
-              <div className="flex items-center justify-between text-[10px] text-gray-400 font-bold uppercase pt-1">
-                <span>Web Redirect URL</span>
-                <span className="text-emerald-400 font-mono">HTTPS</span>
-              </div>
-              <div className="bg-black/60 p-2 rounded-xl text-emerald-400 font-mono text-[10px] break-all border border-gray-800">
-                https://jri.network/app#post={deepSharePostModal.id}
-              </div>
+              <p className="text-[10px] text-gray-500 leading-relaxed">
+                This link only opens something inside the Aural app on a device that already has it installed. It isn't a public web page — nobody outside the app can view this post through it.
+              </p>
             </div>
 
             {/* Action Buttons */}
@@ -6216,27 +6440,27 @@ export default function App() {
               <button 
                 onClick={() => {
                   triggerHaptic([40, 80]);
-                  const summaryText = `⚡ JAGX CONNECT POST BY ${deepSharePostModal.authorName} (${deepSharePostModal.authorHandle})\n\n"${deepSharePostModal.content}"\n\n🔗 Read full post: https://jri.network/app#post=${deepSharePostModal.id}`;
+                  const summaryText = `⚡ AURAL POST BY ${deepSharePostModal.authorName} (${deepSharePostModal.authorHandle})\n\n"${deepSharePostModal.content}"`;
                   navigator.clipboard.writeText(summaryText);
-                  triggerToast('📋 Rich Share Summary copied to clipboard!');
+                  triggerToast('📋 Post text copied to clipboard!');
                 }}
                 className="w-full bg-gradient-to-r from-yellow-500 to-amber-500 text-black font-extrabold text-xs py-2.5 rounded-xl flex items-center justify-center gap-1.5 shadow-md hover:brightness-110 transition"
               >
                 <Copy className="w-4 h-4" />
-                <span>Copy Rich Share Card Summary</span>
+                <span>Copy Post Text</span>
               </button>
 
               <div className="grid grid-cols-2 gap-2">
                 <button 
                   onClick={() => {
                     triggerHaptic(30);
-                    navigator.clipboard.writeText(`jagx://post/${deepSharePostModal.id}`);
-                    triggerToast('📋 Native Deep Link copied!');
+                    navigator.clipboard.writeText(`aural://post/${deepSharePostModal.id}`);
+                    triggerToast('📋 In-app link copied!');
                   }}
                   className="bg-[#1F222C] border border-gray-700 hover:border-yellow-500 text-white font-bold text-xs py-2 rounded-xl flex items-center justify-center gap-1 transition"
                 >
                   <Copy className="w-3.5 h-3.5 text-yellow-400" />
-                  <span>Copy Deep Link</span>
+                  <span>Copy In-App Link</span>
                 </button>
 
                 <button 
@@ -6685,7 +6909,7 @@ export default function App() {
                   ...prev,
                   [p.id]: {
                     translatedText: p.language === 'fr' 
-                      ? 'Hello everyone! We are very excited to present the new version of JagX Connect. The Web3 network is incredible! 🚀✨ #Tech #Web3'
+                      ? 'Hello everyone! We are very excited to present the new version of Aural. The Web3 network is incredible! 🚀✨ #Tech #Web3'
                       : `Translated (${p.language || 'Detected'} → English): "${p.content}"`,
                     sourceLang: p.language === 'fr' ? 'French' : 'Native Dialect',
                     isTranslating: false
@@ -6739,24 +6963,24 @@ export default function App() {
               <p className="text-[10px] text-gray-400 font-medium">By {sharePollModalPost.authorName} ({sharePollModalPost.authorHandle}) • {sharePollModalPost.poll.totalVotes} votes</p>
             </div>
 
-            {/* Generated Deep Link Input */}
+            {/* Generated In-App Link — only opens something inside Aural */}
             <div className="space-y-1.5">
               <label className="text-[11px] font-bold text-gray-300 flex items-center justify-between">
-                <span>Generated Poll Deep Link</span>
-                <span className="text-[9px] text-yellow-400 font-mono">jagx://poll/{sharePollModalPost.id}</span>
+                <span>In-App Poll Link (Aural only)</span>
+                <span className="text-[9px] text-yellow-400 font-mono">aural://poll/{sharePollModalPost.id}</span>
               </label>
               <div className="flex items-center gap-2">
                 <input 
                   type="text" 
                   readOnly 
-                  value={`https://jri.network/app#poll=${sharePollModalPost.id}`} 
+                  value={`aural://poll/${sharePollModalPost.id}`} 
                   className="flex-1 bg-[#1F222C] border border-gray-800 rounded-xl px-3 py-2 text-xs text-yellow-400 font-mono focus:outline-none"
                 />
                 <button 
                   onClick={() => {
-                    navigator.clipboard?.writeText(`https://jri.network/app#poll=${sharePollModalPost.id}`);
+                    navigator.clipboard?.writeText(`aural://poll/${sharePollModalPost.id}`);
                     triggerHaptic([30, 60]);
-                    triggerToast('📋 Poll deep link copied to clipboard!');
+                    triggerToast('📋 In-app poll link copied!');
                   }}
                   className="bg-yellow-500 hover:bg-yellow-400 text-black font-extrabold px-3 py-2 rounded-xl text-xs flex items-center gap-1 transition"
                 >
@@ -6764,55 +6988,23 @@ export default function App() {
                   <span>Copy</span>
                 </button>
               </div>
+              <p className="text-[10px] text-gray-500">Only works for someone who already has Aural installed — this poll isn't accessible from outside the app.</p>
             </div>
 
-            {/* One-Tap Social Sharing Buttons */}
+            {/* Share within Aural only — no external platforms */}
             <div className="space-y-2 pt-1">
-              <p className="text-[10px] text-gray-400 uppercase font-extrabold tracking-wider">Share via Channels</p>
-              <div className="grid grid-cols-2 gap-2 text-xs font-bold">
-                {/* WhatsApp */}
-                <a
-                  href={`https://api.whatsapp.com/send?text=${encodeURIComponent(`📊 Vote in this JagX Poll: "${sharePollModalPost.poll.question}"\nhttps://jri.network/app#poll=${sharePollModalPost.id}`)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => triggerHaptic(30)}
-                  className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 transition"
-                >
-                  <span>💬 WhatsApp</span>
-                </a>
-
-                {/* Twitter / X */}
-                <a
-                  href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(`📊 Vote in this JagX Poll: "${sharePollModalPost.poll.question}"`)}&url=${encodeURIComponent(`https://jri.network/app#poll=${sharePollModalPost.id}`)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => triggerHaptic(30)}
-                  className="bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 transition"
-                >
-                  <span>𝕏 Twitter</span>
-                </a>
-
-                {/* Telegram */}
-                <a
-                  href={`https://t.me/share/url?url=${encodeURIComponent(`https://jri.network/app#poll=${sharePollModalPost.id}`)}&text=${encodeURIComponent(`📊 Vote in this JagX Poll: "${sharePollModalPost.poll.question}"`)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => triggerHaptic(30)}
-                  className="bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 transition"
-                >
-                  <span>✈️ Telegram</span>
-                </a>
-
+              <p className="text-[10px] text-gray-400 uppercase font-extrabold tracking-wider">Share within Aural</p>
+              <div className="grid grid-cols-1 gap-2 text-xs font-bold">
                 {/* Direct DM in App */}
                 <button
                   onClick={() => {
                     triggerHaptic(30);
-                    triggerToast('💬 Poll shared to your active JagX DMs!');
+                    triggerToast('💬 Poll shared to your active Aural DMs!');
                     setSharePollModalPost(null);
                   }}
                   className="bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/40 py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 transition"
                 >
-                  <span>✉️ JagX DMs</span>
+                  <span>✉️ Aural DMs</span>
                 </button>
               </div>
             </div>
@@ -7061,10 +7253,6 @@ export default function App() {
               </div>
               <button onClick={() => setShowAiAssistant(false)}><X className="w-4 h-4 text-gray-400" /></button>
             </div>
-
-            {!isJagxAIConfigured() && (
-              <p className="text-[11px] text-yellow-400 text-center py-2">⚠️ JagX AI key not set — add VITE_JAGX_AI_API_KEY to your .env.</p>
-            )}
 
             <div className="flex-1 overflow-y-auto space-y-2 py-2">
               {aiAssistantMessages.length === 0 && (

@@ -1,8 +1,8 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.jagx.connect',
-  appName: 'JagX Connect',
+  appId: 'com.aural.app',
+  appName: 'Aural',
   webDir: 'dist',
   backgroundColor: '#0B0C10',
   server: {

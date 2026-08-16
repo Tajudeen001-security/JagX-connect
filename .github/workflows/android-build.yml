@@ -47,6 +47,16 @@ jobs:
           npx capacitor-assets generate --android
           npx cap sync android
 
+      - name: Add custom URL scheme for OAuth login (aural://)
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ] && ! grep -q 'android:scheme="aural"' "$MANIFEST"; then
+            sed -i '0,/<\/activity>/{s#</activity>#        <intent-filter>\n            <action android:name="android.intent.action.VIEW" />\n            <category android:name="android.intent.category.DEFAULT" />\n            <category android:name="android.intent.category.BROWSABLE" />\n            <data android:scheme="aural" />\n        </intent-filter>\n    </activity>#}' "$MANIFEST"
+            echo "Added aural:// intent-filter to MainActivity."
+          else
+            echo "aural:// scheme already present or manifest not found yet."
+          fi
+
       - name: Add Firebase google-services.json (for native push notifications)
         env:
           GOOGLE_SERVICES_JSON_B64: ${{ secrets.GOOGLE_SERVICES_JSON_B64 }}
@@ -110,14 +120,6 @@ jobs:
           echo "== Final permission list =="
           grep "uses-permission\|uses-feature" "$MANIFEST" || true
 
-      - name: Generate app icon & splash screen from logo
-        run: |
-          npm install -D @capacitor/assets
-          mkdir -p resources
-          cp "public/image-5 (1).jpg" resources/icon.png
-          cp "public/image-5 (1).jpg" resources/splash.png
-          npx capacitor-assets generate --android --iconBackgroundColor '#0a0a0a' --splashBackgroundColor '#0a0a0a' || echo "Icon generation skipped/failed, continuing with default icon."
-
       - name: Grant execute permission for gradlew
         run: chmod +x android/gradlew
 
@@ -129,7 +131,7 @@ jobs:
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: jagx-connect-debug-apk
+          name: aural-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: Decode release keystore (only if the secret is set)
@@ -184,5 +186,5 @@ jobs:
         if: ${{ hashFiles('android/app/release.keystore') != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: jagx-connect-release-apk-SIGNED
+          name: aural-release-apk-SIGNED
           path: android/app/build/outputs/apk/release/app-release.apk
